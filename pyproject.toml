@@ -1,0 +1,27 @@
+[project]
+name = "gkp-state-prep"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11, <3.14"
+dependencies = [
+    "diffrax>=0.7.2",
+    "equinox>=0.13.4",
+    "ipykernel>=7.2.0",
+    "jupyter>=1.1.1",
+    "matplotlib>=3.10.8",
+    "numpy>=1.16.6,<2.0",
+    "optax>=0.2.7",
+    "qutip>=5.2.3",
+    "qutip-qoc>=0.1.1",
+    "qutip-qtrl>=0.1.5",
+    "torch>=2.10.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
