@@ -40,7 +40,7 @@ compared.
 ## Quickstart
 
 ```bash
-git clone https://github.com/<you>/gkp_optimal_control.git
+git clone https://github.com/<you>/gkp-optimal-control.git
 cd gkp_optimal_control
 uv sync
 uv run jupyter lab
