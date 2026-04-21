@@ -19,6 +19,6 @@ ipython_config.py
 # Project outputs and data
 data/
 figs/
-vid/
+vids/
 
 .DS_Store
