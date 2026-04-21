@@ -1,6 +1,6 @@
-## GKP Optimal Control
+# GKP Optimal Control
 
-Time-optimal preparation and gate design for finite-energy GKP logical states.
+Time-optimal preparation and state transfer for finite-energy GKP logical states.
 
 This repository implements the [quantum brachistochrone][carlini] construction
 for Gottesman–Kitaev–Preskill (GKP) bosonic codes: given an initial and target
@@ -8,7 +8,7 @@ state, it returns the constant Hamiltonian that drives the transition in the
 minimum time allowed by the Mandelstam–Tamm bound,
 
 $$
-T_{\mathrm{min}} \;=\; \frac{\Omega_B}{\|H\|}, \qquad
+T_{\mathrm{min}} = \frac{\Omega_B}{\|H\|}, \qquad
 \theta_B = \arccos |\langle \psi_i | \psi_f \rangle|.
 $$
 
