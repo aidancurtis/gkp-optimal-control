@@ -1,8 +1,11 @@
+"""Plotting utilities for bosonic states (pure JAX, no qutip)."""
+
+import jax.numpy as jnp
 import matplotlib.colors as mpl_colors
 import matplotlib.pyplot as plt
 import numpy as np
-import qutip as qt
 from matplotlib.axes import Axes
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 from .utils import compute_wigner
 
@@ -20,8 +23,32 @@ def set_plot_style() -> None:
     plt.rcParams["text.latex.preamble"] = r"\usepackage{braket}\usepackage{amsmath}"
 
 
+def _is_ket(state: jnp.ndarray) -> bool:
+    """Return True if ``state`` is a 1D ket or column-vector ket."""
+    if state.ndim == 1:
+        return True
+    if state.ndim == 2 and state.shape[1] == 1:
+        return True
+    return False
+
+
+def _photon_probs(state: jnp.ndarray) -> np.ndarray:
+    """Return the photon-number probability distribution ``P(n)`` as a numpy array.
+
+    Accepts either a 1D ket ``(n_fock,)``, a column-vector ket ``(n_fock, 1)``,
+    or a density matrix ``(n_fock, n_fock)``. For kets, ``P(n) = |c_n|^2``.
+    For density matrices, ``P(n) = rho_{nn}``.
+    """
+    if _is_ket(state):
+        ket = jnp.asarray(state).reshape(-1)
+        probs = jnp.abs(ket) ** 2
+    else:
+        probs = jnp.real(jnp.diag(jnp.asarray(state)))
+    return np.asarray(probs)
+
+
 def plot_wigner(
-    state: qt.Qobj | None = None,
+    state: jnp.ndarray | None = None,
     x_bound: float | None = None,
     y_bound: float | None = None,
     ax: Axes | None = None,
@@ -46,9 +73,9 @@ def plot_wigner(
 
     Parameters
     ----------
-    state : qutip.Qobj, optional
-        Ket or density matrix of the bosonic state. Required when ``wigner``
-        is not supplied.
+    state : jnp.ndarray, optional
+        Ket (1D or column-vector) or density matrix of the bosonic state.
+        Required when ``wigner`` is not supplied.
     x_bound, y_bound : float, optional
         Half-widths of the :math:`q`- and :math:`p`-axes. Required when
         ``wigner`` is not supplied.
@@ -78,8 +105,7 @@ def plot_wigner(
     ------
     ValueError
         If neither a ``state`` with bounds nor a precomputed ``wigner`` with
-        its grid is supplied, or if the Wigner function could not be
-        computed for ``state``.
+        its grid is supplied.
     """
     if wigner is not None:
         if xvec is None or yvec is None:
@@ -91,8 +117,17 @@ def plot_wigner(
     else:
         raise ValueError("Must supply either a state with bounds or a precomputed wigner.")
 
+    # Ensure numpy arrays for matplotlib (compute_wigner returns numpy, but a
+    # caller-supplied wigner may be a jax array).
+    xvec = np.asarray(xvec)
+    yvec = np.asarray(yvec)
+    wigner = np.asarray(wigner)
+
     if ax is None:
         _, ax = plt.subplots(figsize=(8, 6))
+
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes("right", size="5%", pad=0.05)
 
     wmax = float(np.abs(wigner).max())
     if wmax == 0.0:
@@ -101,10 +136,19 @@ def plot_wigner(
         norm = mpl_colors.TwoSlopeNorm(vmin=-wmax, vcenter=0.0, vmax=wmax)
 
     x, y = np.meshgrid(xvec, yvec)
-    cf = ax.contourf(x, y, np.real(wigner), 100, cmap="RdBu_r", norm=norm)
+    cf = ax.pcolormesh(
+        x,
+        y,
+        np.real(wigner),
+        cmap="RdBu_r",
+        norm=norm,
+        shading="gouraud",  # smooth interpolation; use "auto" for pixelated
+        rasterized=True,  # important if saving to PDF
+    )
 
     if add_colorbar:
-        ax.figure.colorbar(cf, ax=ax)
+        cbar = ax.figure.colorbar(cf, ax=ax, cax=cax)
+        cbar.set_label(r"$W(\alpha)$")
 
     if title:
         ax.set_title(title)
@@ -117,7 +161,7 @@ def plot_wigner(
 
 
 def plot_photon_number(
-    state: qt.Qobj,
+    state: jnp.ndarray,
     ax: Axes | None = None,
     title: str | None = None,
     y_lim: float | None = None,
@@ -127,8 +171,8 @@ def plot_photon_number(
 
     Parameters
     ----------
-    state : qutip.Qobj
-        Ket or density matrix of the bosonic state.
+    state : jnp.ndarray
+        Ket (1D or column-vector) or density matrix of the bosonic state.
     ax : matplotlib.axes.Axes, optional
         Axes to draw on. If ``None``, a new figure and axes are created.
     title : str, optional
@@ -146,9 +190,7 @@ def plot_photon_number(
     if ax is None:
         _, ax = plt.subplots(figsize=(8, 4))
 
-    rho = qt.ket2dm(state) if state.type == "ket" else state
-
-    photon_probs = np.real(rho.diag())
+    photon_probs = _photon_probs(state)
     if max_n is not None:
         photon_probs = photon_probs[:max_n]
     ns = np.arange(len(photon_probs))
@@ -172,76 +214,4 @@ def plot_photon_number(
     if title:
         ax.set_title(title)
 
-    return ax
-
-
-def plot_controls(
-    result,
-    title: str | None = None,
-    labels: list[str] | None = None,
-    ax: Axes | None = None,
-    show_initial: bool = False,
-) -> Axes:
-    r"""Plot control pulses from a QuTiP-QTRL optimisation result.
-
-    Parameters
-    ----------
-    result : qutip_qtrl.optimresult.OptimResult
-        Optimisation result exposing ``time``, ``final_amps``, and
-        ``initial_amps``.
-    title : str, optional
-        Axes title. If ``None``, no title is set.
-    labels : list of str, optional
-        One label per control channel. If ``None``, channels are labelled
-        ``"Control 0"``, ``"Control 1"``, etc.
-    ax : matplotlib.axes.Axes, optional
-        Axes to draw on. If ``None``, a new figure and axes are created.
-    show_initial : bool, default False
-        If ``True``, overlay the initial (pre-optimisation) pulses as dashed
-        lines.
-
-    Returns
-    -------
-    matplotlib.axes.Axes
-        The axes containing the plot.
-
-    Raises
-    ------
-    ValueError
-        If ``labels`` is provided and its length does not match the number of
-        control channels in ``result``.
-    """
-    if ax is None:
-        _, ax = plt.subplots(figsize=(8, 4))
-
-    n_ctrls = result.final_amps.shape[1]
-
-    if labels is None:
-        labels = [f"Control {j}" for j in range(n_ctrls)]
-    elif len(labels) != n_ctrls:
-        raise ValueError(
-            f"Expected {n_ctrls} labels to match the number of controls, got {len(labels)}."
-        )
-
-    for j in range(n_ctrls):
-        final = np.hstack((result.final_amps[:, j], result.final_amps[-1, j]))
-        ax.step(result.time, final, where="post", label=labels[j])
-
-        if show_initial:
-            initial = np.hstack((result.initial_amps[:, j], result.initial_amps[-1, j]))
-            ax.step(
-                result.time,
-                initial,
-                where="post",
-                linestyle="--",
-                alpha=0.5,
-                label=f"{labels[j]} (initial)",
-            )
-
-    if title:
-        ax.set_title(title)
-
-    ax.set_xlabel("Time")
-    ax.set_ylabel("Control amplitude")
-    ax.legend()
     return ax

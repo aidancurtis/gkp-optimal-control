@@ -1,14 +1,15 @@
-import cmath
+from functools import partial
 
-import numpy as np
-import qutip as qt
+import jax
+import jax.numpy as jnp
 
 
+@partial(jax.jit, static_argnames=())
 def quantum_brachistochrone_hamiltonian(
-    initial_state: qt.Qobj,
-    final_state: qt.Qobj,
+    initial_state: jnp.ndarray,
+    final_state: jnp.ndarray,
     energy_bound: float = 1.0,
-) -> tuple[qt.Qobj, float]:
+) -> tuple[jnp.ndarray, jnp.ndarray]:
     r"""Return the time-optimal Hamiltonian driving one state into another.
 
     Constructs the constant Hamiltonian that evolves ``initial_state`` to
@@ -20,20 +21,20 @@ def quantum_brachistochrone_hamiltonian(
 
     Parameters
     ----------
-    initial_state : qutip.Qobj
-        Normalized initial ket :math:`|\psi_i\rangle`.
-    final_state : qutip.Qobj
-        Normalized target ket :math:`|\psi_f\rangle`. Must not be orthogonal
-        to ``initial_state``.
+    initial_state : jnp.ndarray
+        Normalized initial ket :math:`|\psi_i\rangle`, shape ``(dim,)``.
+    final_state : jnp.ndarray
+        Normalized target ket :math:`|\psi_f\rangle`, shape ``(dim,)``.
+        Must not be orthogonal to ``initial_state``.
     energy_bound : float, default 1.0
         Spectral-norm bound on the Hamiltonian, :math:`\lVert H \rVert`.
 
     Returns
     -------
-    h_optimal : qutip.Qobj
+    h_optimal : jnp.ndarray
         Time-optimal Hamiltonian driving :math:`|\psi_i\rangle` to
-        :math:`|\psi_f\rangle`.
-    min_time : float
+        :math:`|\psi_f\rangle`, shape ``(dim, dim)``.
+    min_time : jnp.ndarray
         Minimum evolution time :math:`T = \theta_B / \lVert H \rVert`, where
         :math:`\theta_B = \arccos|\langle \psi_i | \psi_f \rangle|` is the
         Bures angle between the two states.
@@ -43,13 +44,29 @@ def quantum_brachistochrone_hamiltonian(
     Carlini, A., Hosoya, A., Koike, T., & Okudaira, Y. (2006).
     Time-optimal quantum evolution. *Physical Review Letters*, 96(6), 060503.
     """
-    psi_f_perp = (final_state - initial_state.overlap(final_state) * initial_state).unit()
-    phi = cmath.phase(initial_state.overlap(final_state))
-    bures_angle = np.arccos(np.abs(initial_state.overlap(final_state)))
+    # Overlap <psi_i | psi_f> as a complex scalar.
+    # jnp.vdot conjugates the first argument, matching the bra-ket convention.
+    overlap = jnp.vdot(initial_state, final_state)
 
-    sigma_x_eff = initial_state * psi_f_perp.dag() + psi_f_perp * initial_state.dag()
-    sigma_y_eff = -1j * (initial_state * psi_f_perp.dag() - psi_f_perp * initial_state.dag())
-    h_optimal = energy_bound * (np.sin(phi) * sigma_x_eff + np.cos(phi) * sigma_y_eff)
+    # Orthogonal component of |psi_f> relative to |psi_i>, normalized.
+    perp = final_state - overlap * initial_state
+    psi_f_perp = perp / jnp.linalg.norm(perp)
 
-    min_time = bures_angle / np.abs(energy_bound)
+    # Phase of the overlap and the Bures angle. arccos's argument is clipped
+    # to [0, 1] to stay safe near (anti-)parallel states.
+    phi = jnp.angle(overlap)
+    overlap_abs = jnp.clip(jnp.abs(overlap), 0.0, 1.0)
+    bures_angle = jnp.arccos(overlap_abs)
+
+    # Effective Pauli operators inside the 2D subspace {|psi_i>, |psi_f_perp>}.
+    # outer(a, b.conj()) = |a><b|.
+    proj_if = jnp.outer(initial_state, psi_f_perp.conj())
+    proj_fi = jnp.outer(psi_f_perp, initial_state.conj())
+
+    sigma_x_eff = proj_if + proj_fi
+    sigma_y_eff = -1j * (proj_if - proj_fi)
+
+    h_optimal = energy_bound * (jnp.sin(phi) * sigma_x_eff + jnp.cos(phi) * sigma_y_eff)
+    min_time = bures_angle / jnp.abs(energy_bound)
+
     return h_optimal, min_time

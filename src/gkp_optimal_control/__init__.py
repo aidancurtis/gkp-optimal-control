@@ -1,3 +1,5 @@
+import jax
+
 from gkp_optimal_control.animation import animate_wigner
 from gkp_optimal_control.brachistochrone import quantum_brachistochrone_hamiltonian
 from gkp_optimal_control.plotting import (
@@ -7,14 +9,14 @@ from gkp_optimal_control.plotting import (
 )
 from gkp_optimal_control.states import cat_states, gkp_states
 from gkp_optimal_control.utils import (
-    assemble_qt_hamiltonian,
     compute_wigner,
     wigner_trajectory,
 )
 
+jax.config.update("jax_enable_x64", True)
+
 __all__ = [
     "animate_wigner",
-    "assemble_qt_hamiltonian",
     "cat_states",
     "compute_wigner",
     "gkp_states",
