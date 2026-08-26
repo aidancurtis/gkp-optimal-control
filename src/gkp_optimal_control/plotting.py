@@ -148,7 +148,7 @@ def plot_wigner(
 
     if add_colorbar:
         cbar = ax.figure.colorbar(cf, ax=ax, cax=cax)
-        cbar.set_label(r"$W(\alpha)$")
+        cbar.set_label(r"$W(q,p)$")
 
     if title:
         ax.set_title(title)
