@@ -1,9 +1,11 @@
 """GRAPE (gradient ascent pulse engineering) for quantum optimal control.
 
-Consolidated implementation that used to span four files (``grape.py``,
-``grape_batched.py``, ``grape_adam.py``, ``grape_adam_padded.py``) which
-duplicated a shared penalty suite. The former module names are kept as thin
-re-export shims so existing imports keep working.
+Consolidated implementation. This module unifies what previously spanned four
+files — ``grape.py``, ``grape_batched.py``, ``grape_adam.py``, and
+``grape_adam_padded.py`` — de-duplicating the shared penalty suite into a
+single ``amplitude_penalty`` / ``derivative_penalty`` / ``boundary_penalty``
+set. The former submodule names are no longer importable; import everything
+from here.
 """
 
 import time
@@ -859,7 +861,7 @@ def run_grape_adam_batched(
         cosine-with-warmup is often better than a constant lr. If ``None``,
         falls back to a constant lr.
     params0_batch, n_seeds_per_band, seed, init_scale
-        Same semantics as ``grape_batched.run_grape_batched``.
+        Same semantics as ``run_grape_batched``.
 
     Returns
     -------
