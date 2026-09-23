@@ -1,0 +1,166 @@
+\documentclass[11pt]{article}
+
+% ---------- Packages ----------
+\usepackage[utf8]{inputenc}   % UTF-8 encoding
+\usepackage[T1]{fontenc}      % Better font encoding
+\usepackage{lmodern}          % Improved font
+\usepackage{amsmath, amssymb, amsfonts} % Math packages
+\usepackage{graphicx}         % Include images
+\usepackage{geometry}         % Page layout
+\usepackage{hyperref}         % Clickable links
+\usepackage{physics}          % Bra-ket, derivatives, etc. (optional)
+\usepackage{bm}               % Bold math symbols
+
+\allowdisplaybreaks
+\setlength{\parindent}{0pt}
+
+% ---------- Page Setup ----------
+\geometry{margin=1in}
+
+% ---------- Title Info ----------
+\title{GKP Brachistochrone Optimal Hamiltonian Notes}
+\author{Aidan Curtis}
+\date{\today}
+
+% ---------- Document ----------
+\begin{document}
+
+\maketitle
+
+\section{Notation}
+
+For the purpose of this document, we refer to $\ket{0}$ as the dimensionless oscillator vacuum state and $\ket{\mu ; \Delta, \kappa}_{\text{GKP}}$ with $\mu \in \{0,1\}$ and $\Delta, \kappa \in \mathbb{R}^+$, as the GKP $+Z$ logical states. Their position-space wavefunctions are defined as
+\begin{align}
+    \psi_0(x)                                    & \equiv \braket{x}{0}
+    = \mathcal{N}_{\mathrm{V}} \exp\!\left(-\frac{x^2}{2}\right),                                       \\
+    \psi_{\mu}^{\mathrm{GKP}}(x; \Delta, \kappa) & \equiv \braket{x}{\mu ; \Delta, \kappa}_{\text{GKP}}
+    = \mathcal{N}_{\mathrm{GKP}} \exp\!\left(-\frac{\kappa^2 x^2}{2}\right)
+    \sum_{s \in \mathbb{Z}}
+    \exp\!\left(-\frac{(x - (2s + \mu)\alpha)^2}{2\Delta^2}\right).
+\end{align}
+where $\mathcal{N_\text{V}}$ and $\mathcal{N_{\text{GKP}}} \equiv \mathcal{N_{\text{GKP}}}(\Delta, \kappa)$ are normalization constants.
+
+\section{Wavefunction Normalizations}
+We can calculate $\mathcal{N_\text{V}}$ and $\mathcal{N_{\text{GKP}}}$ by finding the values that satisfy the unit inner product. For the vacuum state,
+$$
+    \braket{0}{0} = \int_{-\infty}^{\infty} \abs{\psi_0(x)}^2 dx = \mathcal{N}_{\mathrm{V}}^2 \int_{-\infty}^{\infty} \exp\!\left(-\kappa^2 x^2\right) dx.
+$$
+Therefore,
+$$
+    \mathcal{N}_{\mathrm{V}} = \left[\int_{-\infty}^{\infty} \exp\!\left(-\kappa^2 x^2\right)\right]^{-\frac{1}{2}} = \left(\frac{\kappa}{\sqrt{\pi}}\right)^{\frac{1}{2}}.
+$$
+
+For the logical GKP states,
+\begin{align*}
+    \braket{\mu ; \Delta, \kappa}{\mu ; \Delta, \kappa} & = \int_{-\infty}^{\infty} \abs{\psi_{\mu}^{\mathrm{GKP}}(x; \Delta, \kappa)}^2 dx     \\
+                                                        & = \mathcal{N_{\text{GKP}}}^2 \int_{-\infty}^{\infty} \exp\!\left(-\kappa^2 x^2\right)
+    \sum_{s \in \mathbb{Z}}
+    \exp\!\left(-\frac{(x - (2s + \mu)\alpha)^2}{\Delta^2}\right) dx.
+\end{align*}
+
+Therefore,
+\begin{align*}
+    \mathcal{N_{\text{GKP}}} & = \left[\int_{-\infty}^{\infty} \exp\!\left(-\kappa^2 x^2\right)
+        \sum_{s \in \mathbb{Z}}
+    \exp\!\left(-\frac{(x - (2s + \mu)\alpha)^2}{\Delta^2}\right) dx\right]^{-\frac{1}{2}}                                                                                                                                 \\
+                             & = \left[\int_{-\infty}^{\infty} \sum_{s \in \mathbb{Z}} \exp\!\left(-\frac{\Delta^2 \kappa^2 x^2}{\Delta^2}\right)
+    \exp\!\left(-\frac{x^2 + 2(2s+\mu)\alpha x + (2s+\mu)^2 \alpha^2}{\Delta^2}\right) dx\right]^{-\frac{1}{2}}                                                                                                            \\
+                             & = \left[\int_{-\infty}^{\infty} \sum_{s \in \mathbb{Z}} \exp\!\left(-\frac{(\Delta^2 \kappa^2 + 1) x^2 + 2(2s+\mu)\alpha x + (2s+\mu)^2 \alpha^2}{\Delta^2}\right) dx\right]^{-\frac{1}{2}} \\
+                             & = \left[\int_{-\infty}^{\infty} \sum_{s \in \mathbb{Z}} \exp\!\left(-\frac{(\Delta^2 \kappa^2 + 1) x^2 + 2(2s+\mu)\alpha x + (2s+\mu)^2 \alpha^2}{\Delta^2}\right) dx\right]^{-\frac{1}{2}} \\
+\end{align*}
+
+\section{Wavefunction Overlap}
+To streamline the following calculation, we introduce the shorthand
+\begin{equation}
+    a \equiv \frac{(1+\kappa^2)\Delta^2 + 1}{2\Delta^2}, \qquad
+    b \equiv \frac{(2s+\mu)\alpha}{\Delta^2}, \qquad
+    c \equiv \frac{(2s+\mu)^2\alpha^2}{2\Delta^2},
+    \label{eq:abc-def}
+\end{equation}
+along with
+\begin{equation}
+    d \equiv \frac{2(1+\kappa^2)\alpha^2}{(1+\kappa^2)\Delta^2 + 1}.
+    \label{eq:d-def}
+\end{equation}
+Now, calculating the inner product between the vacuum state and logical GKP states,
+\begin{align*}
+    \braket{0}{\mu ; \Delta, \kappa} & = \int_{-\infty}^{\infty} \psi_0(x)^* \psi_{\mu}^{\mathrm{GKP}}(x; \Delta, \kappa) \, dx                                                                                                                                                                                                                                                \\
+                                     & = \mathcal{N}_{\mathrm{V}} \mathcal{N}_{\mathrm{GKP}} \int_{-\infty}^{\infty}\exp\!\left(-\frac{x^2}{2}\right) \exp\!\left(-\frac{\kappa^2 x^2}{2}\right)
+    \sum_{s \in \mathbb{Z}}
+    \exp\!\left(-\frac{(x - (2s + \mu)\alpha)^2}{2\Delta^2}\right)
+    \\
+                                     & = \mathcal{N}_{\mathrm{V}} \mathcal{N}_{\mathrm{GKP}} \int_{-\infty}^{\infty} \exp\!\left(-\frac{(1 + \kappa^2) x^2}{2}\right)
+    \sum_{s \in \mathbb{Z}}
+    \exp\!\left(-\frac{(x - (2s + \mu)\alpha)^2}{2\Delta^2}\right)
+    \\
+                                     & = \mathcal{N}_{\mathrm{V}} \mathcal{N}_{\mathrm{GKP}} \int_{-\infty}^{\infty} \exp\!\left(-\frac{(1 + \kappa^2) x^2}{2}\right)
+    \sum_{s \in \mathbb{Z}}
+    \exp\!\left(-\frac{x^2 + 2(2s+\mu)\alpha x + (2s+\mu)^2 \alpha^2}{2\Delta^2}\right)
+    \\
+                                     & = \mathcal{N}_{\mathrm{V}} \mathcal{N}_{\mathrm{GKP}} \int_{-\infty}^{\infty} \sum_{s \in \mathbb{Z}} \exp\!\left(-\frac{(\Delta^2 + \kappa^2 \Delta^2) x^2}{2 \Delta^2}\right)
+    \exp\!\left(-\frac{x^2 + 2(2s+\mu)\alpha x + (2s+\mu)^2 \alpha^2}{2\Delta^2}\right)
+    \\
+                                     & = \mathcal{N}_{\mathrm{V}} \mathcal{N}_{\mathrm{GKP}} \int_{-\infty}^{\infty} \sum_{s \in \mathbb{Z}} \exp\!\left(-\frac{(\Delta^2 + \kappa^2 \Delta^2 + 1) x^2 + 2(2s+\mu)\alpha x + (2s+\mu)^2 \alpha^2}{2\Delta^2}\right)
+    \\
+                                     & = \mathcal{N}_{\mathrm{V}} \mathcal{N}_{\mathrm{GKP}} \sum_{s \in \mathbb{Z}} \int_{-\infty}^{\infty} \exp\!\left(-(ax^2 + bx + c)\right)
+    \\
+                                     & = \mathcal{N}_{\mathrm{V}} \mathcal{N}_{\mathrm{GKP}} \sum_{s \in \mathbb{Z}} \sqrt{\frac{\pi}{a}} \exp\!\left(\frac{b^2}{4a} - c\right)
+    \\
+                                     & = \mathcal{N}_{\mathrm{V}} \mathcal{N}_{\mathrm{GKP}} \sum_{s \in \mathbb{Z}} \sqrt{\frac{2\pi\Delta^2}{(1 + \kappa^2)\Delta^2 + 1}} \exp\!\left(\frac{1}{4} \left(\frac{2\Delta^2}{(1 + \kappa^2)\Delta^2 + 1}\right) \left(\frac{2(2s + \mu)\alpha}{2\Delta^2}\right)^2 - \left(\frac{(2s + \mu)^2 \alpha^2}{2\Delta^2}\right)\right)
+    \\
+                                     & = \mathcal{N}_{\mathrm{V}} \mathcal{N}_{\mathrm{GKP}} \sqrt{\frac{2\pi\Delta^2}{(1 + \kappa^2)\Delta^2 + 1}} \sum_{s \in \mathbb{Z}}  \exp\!\left(\frac{(2s + \mu)^2\alpha^2}{((1 + \kappa^2)\Delta^2 + 1)(2\Delta^2)} - \frac{(2s + \mu)^2 \alpha^2}{2\Delta^2}\right)
+    \\
+                                     & = \mathcal{N}_{\mathrm{V}} \mathcal{N}_{\mathrm{GKP}} \sqrt{\frac{2\pi\Delta^2}{(1 + \kappa^2)\Delta^2 + 1}} \sum_{s \in \mathbb{Z}}  \exp\!\left(\frac{(2s + \mu)^2\alpha^2 - (2s + \mu)^2\alpha^2((1 + \kappa^2)\Delta^2 + 1)}{((1 + \kappa^2)\Delta^2 + 1)(2\Delta^2)}\right)
+    \\
+                                     & = \mathcal{N}_{\mathrm{V}} \mathcal{N}_{\mathrm{GKP}} \sqrt{\frac{2\pi\Delta^2}{(1 + \kappa^2)\Delta^2 + 1}} \sum_{s \in \mathbb{Z}}  \exp\!\left(-\frac{((1 + \kappa^2)\Delta^2) (2s + \mu)^2\alpha^2}{((1 + \kappa^2)\Delta^2 + 1)(2\Delta^2)}\right)
+    \\
+                                     & = \mathcal{N}_{\mathrm{V}} \mathcal{N}_{\mathrm{GKP}} \sqrt{\frac{2\pi\Delta^2}{(1 + \kappa^2)\Delta^2 + 1}} \sum_{s \in \mathbb{Z}}  \exp\!\left(-\frac{(1 + \kappa^2) (2s + \mu)^2\alpha^2}{2((1 + \kappa^2)\Delta^2 + 1)}\right)
+    \\
+                                     & = \mathcal{N}_{\mathrm{V}} \mathcal{N}_{\mathrm{GKP}} \sqrt{\frac{2\pi\Delta^2}{(1 + \kappa^2)\Delta^2 + 1}} \sum_{s \in \mathbb{Z}}  \exp\!\left(-\frac{2(1 + \kappa^2)\alpha^2}{((1 + \kappa^2)\Delta^2 + 1)}\left(s + \frac{\mu}{2}\right)^2\right)
+    \\
+                                     & = \mathcal{N}_{\mathrm{V}} \mathcal{N}_{\mathrm{GKP}} \sqrt{\frac{2\pi\Delta^2}{(1 + \kappa^2)\Delta^2 + 1}} \sum_{s \in \mathbb{Z}}  \exp\!\left(-d\left(s + \frac{\mu}{2}\right)^2\right)
+    \\
+                                     & = \mathcal{N}_{\mathrm{V}} \mathcal{N}_{\mathrm{GKP}} \sqrt{\frac{2\pi\Delta^2}{(1 + \kappa^2)\Delta^2 + 1}}  \exp\!\left(-\frac{d \mu^2}{4}\right) \sum_{s \in \mathbb{Z}} \exp\!\left(-d s^2\right) \exp\!\left(-d \mu s\right)
+    \\
+                                     & = \mathcal{N}_{\mathrm{V}} \mathcal{N}_{\mathrm{GKP}} \sqrt{\frac{2\pi\Delta^2}{(1 + \kappa^2)\Delta^2 + 1}}  \exp\!\left(-\frac{d \mu}{4}\right) \Theta\left(i\frac{d \mu}{2 \pi}, e^{-d}\right)
+    \\
+                                     & = \mathcal{N}_{\mathrm{V}} \mathcal{N}_{\mathrm{GKP}} \sqrt{\frac{2\pi\Delta^2}{(1 + \kappa^2)\Delta^2 + 1}}  \exp\!\left(-\frac{(1 + \kappa^2)\alpha^2}{2((1 + \kappa^2)\Delta^2 + 1)} \mu\right)                                                                                                                                      \\ &\qquad \qquad \qquad \qquad \qquad \qquad \qquad \qquad \Theta_3\left(i\frac{(1 + \kappa^2)\alpha^2 \mu}{((1 + \kappa^2)\Delta^2 + 1)\pi}, \exp\!\left(-\frac{2(1 + \kappa^2)\alpha^2}{((1 + \kappa^2)\Delta^2 + 1)}\right)\right)
+\end{align*}
+
+where $\Theta_3(z,q)$ is the Jacobi theta function defined as
+$$\Theta_3(z,q) = \sum_{n\in\mathbb{Z}} q^{n^2} e^{2\pi i n z}$$
+
+For the case when $\kappa^{-1} = \Delta$,
+$$d \equiv \frac{2(1+\frac{1}{\Delta^2})\alpha^2}{\Delta^2 + 2}$$
+% and the overlap becomes
+$$
+    \braket{0}{\mu_L} = \mathcal{N}_{\mathrm{V}} \mathcal{N}_{\mathrm{GKP}} \sqrt{\frac{2\pi\Delta^2}{\Delta^2 + 2}}  \exp\!\left(-\frac{(1+\frac{1}{\Delta^2})\alpha^2}{2(\Delta^2 + 2)} \mu\right) \Theta_3\left(i\frac{(1+\frac{1}{\Delta^2})\alpha^2}{\pi(\Delta^2 + 2)} \mu, \exp\!\left(-\frac{2(1+\frac{1}{\Delta^2})\alpha^2}{\Delta^2 + 2}\right)\right)
+$$
+
+\section{Projections}
+The next step towards finding a functional form of the time-optimal Hamiltonian, requires computing the perpendicular component of the final state with respect to the initial state. In the paper \cite{yang2022MinimumTime}, the authors denote this as $|\tilde{\psi_f^{\perp}}\rangle$. The expression is
+\[
+    |\tilde{\psi_f^{\perp}}\rangle
+    =
+    |\psi_f\rangle
+    -
+    \langle \psi_i \mid \psi_f \rangle \, |\psi_i\rangle
+\]
+So,
+\begin{align*}
+    \psi_f^{\perp}(x) & = \psi_{\mu}^{GKP}(x) - \braket{0}{\mu_L} \psi_0(x)
+\end{align*}
+Let us first calculate $\psi_{\mu}^{GKP}(x) - \braket{0}{\mu_L} \psi_0(x)$,
+\begin{align*}
+    \braket{0}{\mu_L} \psi_0(x)
+     & =
+    \mathcal{N}_{\mathrm{V}} \mathcal{N}_{\mathrm{GKP}} \sqrt{\frac{2\pi\Delta^2}{(1 + \kappa^2)\Delta^2 + 1}}  \exp\!\left(-\frac{(1 + \kappa^2)\alpha^2}{2((1 + \kappa^2)\Delta^2 + 1)} \mu\right) \\ &\Theta_3\left(i\frac{(1 + \kappa^2)\alpha^2 \mu}{((1 + \kappa^2)\Delta^2 + 1)\pi}, \exp\!\left(-\frac{2(1 + \kappa^2)\alpha^2}{((1 + \kappa^2)\Delta^2 + 1)}\right)\right) \mathcal{N}_{\mathrm{V}} \exp\!\left(-\frac{x^2}{2}\right)
+\end{align*}
+
+\section{}
+
+\newpage
+\bibliographystyle{unsrt}
+\bibliography{references}
+
+\end{document}

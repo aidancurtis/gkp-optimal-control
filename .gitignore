@@ -23,3 +23,23 @@ vids/
 
 .env
 .DS_Store
+
+# Agent harness (do not commit)
+.poolside/
+
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.blg
+*.log
+*.out
+*.synctex.gz
+*.run.xml
+*.bcf
+*.indent.log
+
+# Compiled notes (sources are the .tex/.bib files)
+/notes/**/*.pdf
+
+# Notebook-generated outputs (sources are the .ipynb themselves)
+/notebooks/**/*.{png,pdf,mp4,npz,npy}

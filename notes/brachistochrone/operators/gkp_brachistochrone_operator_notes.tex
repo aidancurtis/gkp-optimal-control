@@ -1,0 +1,157 @@
+\documentclass[11pt]{article}
+
+% ---------- Packages ----------
+\usepackage[utf8]{inputenc}   % UTF-8 encoding
+\usepackage[T1]{fontenc}      % Better font encoding
+\usepackage{lmodern}          % Improved font
+\usepackage{amsmath, amssymb, amsfonts} % Math packages
+\usepackage{graphicx}         % Include images
+\usepackage{geometry}         % Page layout
+\usepackage{hyperref}         % Clickable links
+\usepackage{physics}          % Bra-ket, derivatives, etc. (optional)
+\usepackage{bm}               % Bold math symbols
+\usepackage{doi}
+\usepackage[backend=biber,style=numeric]{biblatex}
+
+\addbibresource{references.bib}
+
+\allowdisplaybreaks
+\setlength{\parindent}{0pt}
+
+% ---------- Page Setup ----------
+\geometry{margin=1in}
+
+% ---------- Title Info ----------
+\title{GKP Brachistochrone Optimal Hamiltonian Derivation}
+\author{Aidan Curtis}
+\date{\today}
+
+% ---------- Document ----------
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+
+Gottesman-Kitaev-Preskill (GKP) states are bosonic codes that can, in general, encode $d$-dimensional quantum information in $n$ bosonic modes \cite{gottesman2001Encoding}. If one takes $n = 1$ and $d = 2$, the code state represents a qubit in one oscillator mode. The idealized version of these states can be written as infinite superpositions of position eigenstates (Dirac comb) seperated by $2\sqrt{\pi}$ in the position basis,
+\begin{align}
+    \ket{+Z_L} & = \sum_{s \in \mathbb{Z}} \ket{2s\sqrt{\pi}}_q       \\
+    \ket{-Z_L} & = \sum_{s \in \mathbb{Z}} \ket{(2s + 1)\sqrt{\pi}}_q
+\end{align}
+Since these states are unphysical and non-normalizable, so we must make some approximations to this idealized version for realizability. We can replace each position eigenstate with a Gaussian wave function with variance $\Delta^2$ such that,
+\begin{align}
+    | +\tilde{Z}_L \rangle & \propto \sum_{s \in \mathbb{Z}} e^{-\frac{(q - (2s\sqrt{\pi})^2)}{2 \Delta^2}}       \\
+    | -\tilde{Z}_L \rangle & \propto \sum_{s \in \mathbb{Z}} e^{-\frac{(q - ((2s + 1)\sqrt{\pi})^2)}{2 \Delta^2}}
+\end{align}
+This approximation gets around the need of infinite squeezing (infinite energy), but is still non-normalizable. One method for normalizing these states is by applying a Gaussian envelope function with width $\kappa^{-1}$.
+\begin{align}
+    | +\tilde{Z}_L \rangle & \propto e^{-\frac{\kappa^2 q^2}{2}} \sum_{s \in \mathbb{Z}} e^{-\frac{(q - (2s\sqrt{\pi})^2)}{2 \Delta^2}}       \\
+    | -\tilde{Z}_L \rangle & \propto e^{-\frac{\kappa^2 q^2}{2}} \sum_{s \in \mathbb{Z}} e^{-\frac{(q - ((2s + 1)\sqrt{\pi})^2)}{2 \Delta^2}}
+\end{align}
+
+For the purposes of this document, we refer to $\ket{0}$ as vacuum Fock state and $\ket{0_L}$ and $\ket{1_L}$ as the logical GKP states. We follow the definition from Eq. (6) in \cite{grimsmo2021Quantum} where,
+\begin{align}
+    \ket{0_L} & = \mathcal{N}_{0_L} \sum_{k, l \in \mathbb{Z}} e^{-i \pi k l } \ket{2 k \alpha + l \beta}                \\
+    \ket{1_L} & = \mathcal{N}_{1_L} \sum_{k, l \in \mathbb{Z}} e^{-i \pi (k l  + l / 2)} \ket{(2k + 1) \alpha + l \beta}
+\end{align}
+where the kets on the right hand side of the equations represent coherent states.
+By expanding the displacement operator, these logical states can be written in terms of creation and annihilation operators,
+\begin{align*}
+    \ket{0_L} & = \mathcal{N}_{0_L} \sum_{k, l \in \mathbb{Z}} e^{-i \pi k l } D(2 k \alpha + l \beta) \ket{0}                                                      \\
+              & = \mathcal{N}_{0_L} \sum_{k, l \in \mathbb{Z}} e^{-i \pi k l } e^{(2 k \alpha + l \beta)\hat{a}^\dagger - (2 k \alpha + l \beta)^* \hat{a}} \ket{0} \\
+    \ket{1_L} & = \mathcal{N}_{1_L} \sum_{k, l \in \mathbb{Z}} e^{-i \pi (k l  + l / 2)} D((2k + 1) \alpha + l \beta) \ket{0}                                       \\
+              & = \mathcal{N}_{1_L} \sum_{k, l \in \mathbb{Z}} e^{-i \pi (k l  + l / 2)}
+    e^{((2k + 1) \alpha + l \beta)\hat{a}^\dagger - ((2k + 1) \alpha + l \beta)^* \hat{a}} \ket{0}
+\end{align*}
+Defining $\zeta_{m,l} = m\alpha + l\beta$, we can unify both expressions by reindexing with $m = 2k$ for $\ket{0_L}$ and $m = 2k+1$ for $\ket{1_L}$. Under this substitution, the phase factors simplify: for $\ket{0_L}$, $e^{-i\pi k l} = e^{-i\pi m l / 2}$; for $\ket{1_L}$, $e^{-i\pi(kl + l/2)} = e^{-i\pi((m-1)l/2 + l/2)} = e^{-i\pi m l / 2}$. Both states therefore take the unified form
+\begin{equation}
+    \ket{\mu_L} = \mathcal{N}_{\mu_L} \sum_{\substack{m, l \in \mathbb{Z} \\ m \equiv \mu \,(\mathrm{mod}\, 2)}} e^{-i \pi m l / 2} \, e^{\zeta_{m,l} \hat{a}^\dagger - \zeta_{m,l}^* \hat{a}} \ket{0}
+\end{equation}
+for $\mu \in \{0, 1\}$.
+We can construct approximate GKP codestates, $\ket{\tilde{\mu}_L}$, by applying a Gaussian envelope operator, $e^{-\Delta^2 \hat{a}^\dagger \hat{a}}$, to the logical states above.
+\begin{align*}
+    \ket{\tilde{\mu}_L} & = \mathcal{N}_{\mu_L}^\Delta \, e^{-\Delta^2 \hat{a}^\dagger \hat{a}} \sum_{\substack{m, l \in \mathbb{Z} \\ m \equiv \mu \,(\mathrm{mod}\, 2)}} e^{-i \pi m l / 2} \, e^{\zeta_{m,l}\hat{a}^\dagger - \zeta_{m,l}^* \hat{a}} \ket{0} \\
+                        & = \mathcal{N}_{\mu_L}^\Delta \sum_{\substack{m, l \in \mathbb{Z}                                          \\ m \equiv \mu \,(\mathrm{mod}\, 2)}} e^{-i \pi m l / 2} \, e^{-\frac{1}{2} \abs{\zeta_{m,l}}^2} \, e^{-\Delta^2 \hat{a}^\dagger \hat{a}} e^{\zeta_{m,l}\hat{a}^\dagger} e^{- \zeta_{m,l}^* \hat{a}} \ket{0}
+\end{align*}
+where in the last line we used the Baker-Campbell-Hausdorff (BCH) identity $D(\zeta) = e^{-\abs{\zeta}^2/2} e^{\zeta \hat{a}^\dagger} e^{-\zeta^* \hat{a}}$.
+
+\section{Time Optimal Hamiltonian}
+The time optimal Hamiltonian for quantum state transfer was formulated in \cite{carlini2006TimeOptimal} as a solution to the quantum brachistochrone equation and corrected to include global phase information in \cite{yang2022MinimumTime}. From Eq. 69 in \cite{yang2022MinimumTime},
+\begin{equation}
+    H_{\mathrm{opt}} = \omega (\sin(\phi) \sigma_{\mathrm{eff}}^{x} - \cos(\phi) \sigma_{\mathrm{eff}}^{y})
+\end{equation}
+where the $\sigma_{\mathrm{eff}}^{x}$ and $\sigma_{\mathrm{eff}}^{y}$ operators are defined in Eqs. 63 and 64 as,
+\begin{align}
+    \sigma_{\mathrm{eff}}^{x} & \equiv |\psi_i\rangle \langle \psi_f^{\perp}| + |\psi_f^{\perp}\rangle \langle \psi_{i}|     \\
+    \sigma_{\mathrm{eff}}^{y} & \equiv -i(|\psi_i\rangle \langle \psi_f^{\perp}| - |\psi_f^{\perp}\rangle \langle \psi_{i}|)
+\end{align}
+where $|\psi_i\rangle$ is the initial state and $|\psi_f^{\perp}\rangle$ is the orthogonal projection of the initial state onto the final state defined in Eq. 49 as,
+\begin{equation}
+    |\psi_f^{\perp}\rangle \equiv |\psi_f\rangle - \langle \psi_i |\psi_f\rangle |\psi_i\rangle
+\end{equation}
+For state preparation from vacuum to a logical GKP codestate, we define $\ket{\psi_i} = \ket{0}$ and $\ket{\psi_f} = \ket{\tilde{\mu}_L}$. Calculating the wavefunction overlap $\braket{0}{\tilde{\mu}_L}$,
+\begin{align*}
+    \braket{0}{\tilde{\mu}_L} & = \mathcal{N}_{\mu_L}^{\Delta} \sum_{\substack{m, l \in \mathbb{Z} \\ m \equiv \mu \,(\mathrm{mod}\, 2)}} e^{-i \pi m l / 2} \, e^{-\frac{1}{2} \abs{\zeta_{m,l}}^2} \bra{0} e^{-\Delta^2 \hat{a}^\dagger \hat{a}} e^{\zeta_{m,l}\hat{a}^\dagger} e^{- \zeta_{m,l}^* \hat{a}} \ket{0} \\
+                              & = \mathcal{N}_{\mu_L}^{\Delta} \sum_{\substack{m, l \in \mathbb{Z} \\ m \equiv \mu \,(\mathrm{mod}\, 2)}} e^{-i \pi m l / 2} \, e^{-\frac{1}{2} \abs{\zeta_{m,l}}^2} \bra{0} e^{-\Delta^2 \hat{a}^\dagger \hat{a}} e^{\zeta_{m,l}\hat{a}^\dagger} \ket{0} \\
+                              & = \mathcal{N}_{\mu_L}^{\Delta} \sum_{\substack{m, l \in \mathbb{Z} \\ m \equiv \mu \,(\mathrm{mod}\, 2)}} e^{-i \pi m l / 2} \, e^{-\frac{1}{2} \abs{\zeta_{m,l}}^2} \bra{0} e^{-\Delta^2 \hat{a}^\dagger \hat{a}} \sum_{n=0}^{\infty} \frac{\zeta_{m,l}^n}{n!} (\hat{a}^{\dagger})^n \ket{0} \\
+                              & = \mathcal{N}_{\mu_L}^{\Delta} \sum_{\substack{m, l \in \mathbb{Z} \\ m \equiv \mu \,(\mathrm{mod}\, 2)}} e^{-i \pi m l / 2} \, e^{-\frac{1}{2} \abs{\zeta_{m,l}}^2} \sum_{n=0}^{\infty} \frac{\zeta_{m,l}^n}{\sqrt{n!}} \bra{0} e^{-\Delta^2 \hat{a}^\dagger \hat{a}} \ket{n} \\
+                              & = \mathcal{N}_{\mu_L}^{\Delta} \sum_{\substack{m, l \in \mathbb{Z} \\ m \equiv \mu \,(\mathrm{mod}\, 2)}} e^{-i \pi m l / 2} \, e^{-\frac{1}{2} \abs{\zeta_{m,l}}^2} \sum_{n=0}^{\infty} \frac{\zeta_{m,l}^n}{\sqrt{n!}} e^{-\Delta^2 n} \braket{0}{n} \\
+                              & = \mathcal{N}_{\mu_L}^{\Delta} \sum_{\substack{m, l \in \mathbb{Z} \\ m \equiv \mu \,(\mathrm{mod}\, 2)}} e^{-i \pi m l / 2} \, e^{-\frac{1}{2} \abs{\zeta_{m,l}}^2}
+\end{align*}
+Now, we can get $|0^{\perp}_L\rangle$,
+\begin{align*}
+    |0^{\perp}_L\rangle & \equiv \ket{\tilde{\mu}_L} - \braket{0}{\tilde{\mu}_L}\ket{0}      \\
+                        & = \mathcal{N}_{\mu_L}^{\Delta} \sum_{\substack{m, l \in \mathbb{Z} \\ m \equiv \mu \,(\mathrm{mod}\, 2)}} e^{-i \pi m l / 2} \, e^{-\frac{1}{2} \abs{\zeta_{m,l}}^2} \left(e^{-\Delta^2 \hat{a}^\dagger \hat{a}} e^{\zeta_{m,l}\hat{a}^\dagger} e^{- \zeta_{m,l}^* \hat{a}} - 1\right) \ket{0} \\
+                        & = \mathcal{N}_{\mu_L}^{\Delta} \sum_{\substack{m, l \in \mathbb{Z} \\ m \equiv \mu \,(\mathrm{mod}\, 2)}} e^{-i \pi m l / 2} \, e^{-\frac{1}{2} \abs{\zeta_{m,l}}^2} \left(e^{-\Delta^2 \hat{a}^\dagger \hat{a}} e^{\zeta_{m,l}\hat{a}^\dagger} - 1\right) \ket{0}
+\end{align*}
+We can simplify this expression further. Since $\hat{a}\ket{0} = 0$, the rightmost exponential acts trivially on the vacuum,
+\begin{equation}
+    e^{-\zeta_{m,l}^* \hat{a}} \ket{0} = \ket{0}.
+\end{equation}
+Next, using the commutator $[\hat{a}^\dagger \hat{a}, \hat{a}^\dagger] = \hat{a}^\dagger$, we have the identity $e^{-\Delta^2 \hat{a}^\dagger \hat{a}} \hat{a}^\dagger = e^{-\Delta^2} \hat{a}^\dagger e^{-\Delta^2 \hat{a}^\dagger \hat{a}}$, which iterates to
+\begin{equation}
+    e^{-\Delta^2 \hat{a}^\dagger \hat{a}} e^{\zeta_{m,l} \hat{a}^\dagger} = e^{\zeta_{m,l}^\Delta \hat{a}^\dagger} e^{-\Delta^2 \hat{a}^\dagger \hat{a}},
+\end{equation}
+where we have defined the rescaled amplitude $\zeta_{m,l}^\Delta \equiv e^{-\Delta^2} \zeta_{m,l}$. Since $e^{-\Delta^2 \hat{a}^\dagger \hat{a}} \ket{0} = \ket{0}$, we obtain
+\begin{equation}
+    e^{-\Delta^2 \hat{a}^\dagger \hat{a}} e^{\zeta_{m,l} \hat{a}^\dagger} \ket{0} = e^{\zeta_{m,l}^\Delta \hat{a}^\dagger} \ket{0}.
+\end{equation}
+Applying these simplifications, the orthogonal component becomes
+\begin{equation}
+    |\mu_L^{\perp}\rangle = \mathcal{N}_{\mu_L}^{\Delta} \sum_{\substack{m, l \in \mathbb{Z} \\ m \equiv \mu \,(\mathrm{mod}\, 2)}} e^{-i \pi m l / 2} \, e^{-\frac{1}{2} \abs{\zeta_{m,l}}^2} \left(e^{\zeta_{m,l}^\Delta \hat{a}^\dagger} - 1\right) \ket{0}.
+\end{equation}
+Now, we can write the projectors $|\mu_L^{\perp}\rangle \langle 0|$ and $|0 \rangle \langle \mu_L^{\perp}|$ as
+\begin{align}
+    |\mu_L^{\perp}\rangle \langle 0| & = \mathcal{N}_{\mu_L}^{\Delta} \sum_{\substack{m, l \in \mathbb{Z} \\ m \equiv \mu \,(\mathrm{mod}\, 2)}} e^{-i \pi m l / 2} \, e^{-\frac{1}{2} \abs{\zeta_{m,l}}^2} \left(e^{\zeta_{m,l}^\Delta \hat{a}^\dagger} - 1\right) \ket{0}\bra{0} \\
+    |0\rangle \langle\mu_L^{\perp}|  & = \mathcal{N}_{\mu_L}^{\Delta} \sum_{\substack{m, l \in \mathbb{Z} \\ m \equiv \mu \,(\mathrm{mod}\, 2)}} e^{i \pi m l / 2} \, e^{-\frac{1}{2} \abs{\zeta_{m,l}}^2} \ket{0}\bra{0} \left(e^{(\zeta_{m,l}^\Delta)^* \hat{a}} - 1\right).
+\end{align}
+
+The projector $\ket{0}\bra{0}$ can be written a the normal ordered exponential,
+$$\ket{0}\bra{0} = : e^{-\hat{a}^\dagger \hat{a}} : = \sum_{k=0}^{\infty} \frac{(-1)^k}{k!} \hat{a}^{\dagger k} \hat{a}^{k}.$$
+
+The right side can be expanded as,
+\begin{align*}
+    \left(e^{B \hat{a}^\dagger} - 1\right) \ket{0}\bra{0} & = \left(\sum_{n=0}^{\infty} \frac{B^n}{n!} \hat{a}^{\dagger n} - 1\right) \sum_{k=0}^{\infty} \frac{(-1)^k}{k!} \hat{a}^{\dagger k} \hat{a}^{k} \\
+                                                          & = \sum_{n=1}^{\infty} \frac{B^n}{n!} \hat{a}^{\dagger n} \sum_{k=0}^{\infty} \frac{(-1)^k}{k} \hat{a}^{\dagger k} \hat{a}^{k}                   \\
+                                                          & = \sum_{n=1}^{\infty} \frac{B^n}{n!} \sum_{k=0}^{\infty} \frac{(-1)^k}{k!}  \hat{a}^{\dagger (k + n)} \hat{a}^{k}
+\end{align*}
+So,
+\begin{align*}
+    |\mu_L^{\perp}\rangle \langle 0|  & = \mathcal{N}_{\mu_L}^{\Delta} \sum_{\substack{m, l \in \mathbb{Z} \\ m \equiv \mu \,(\mathrm{mod}\, 2)}} e^{-i \pi m l / 2} \, e^{-\frac{1}{2} \abs{\zeta_{m,l}}^2} \sum_{n=1}^{\infty} \sum_{k=0}^{\infty} \frac{(-1)^k}{k!} \frac{(\zeta_{m,l}^\Delta)^n}{n!} \hat{a}^{\dagger (k + n)} \hat{a}^{k} \\
+    |0 \rangle \langle \mu_L^{\perp}| & = \mathcal{N}_{\mu_L}^{\Delta} \sum_{\substack{m, l \in \mathbb{Z} \\ m \equiv \mu \,(\mathrm{mod}\, 2)}} e^{i \pi m l / 2} \, e^{-\frac{1}{2} \abs{\zeta_{m,l}}^2} \sum_{n=1}^{\infty} \sum_{k=0}^{\infty} \frac{(-1)^k}{k!} \frac{(\zeta_{m,l}^{\Delta *})^n}{n!} \hat{a}^{\dagger k} \hat{a}^{(k + n)} \\
+\end{align*}
+which leads to
+\begin{align}
+    \sigma_{\mathrm{eff}}^{x} & = \mathcal{N}_{\mu_L}^{\Delta} \sum_{\substack{m, l \in \mathbb{Z} \\ m \equiv \mu \,(\mathrm{mod}\, 2)}} \, e^{-\frac{1}{2} \abs{\zeta_{m,l}}^2} \sum_{n=1}^{\infty} \sum_{k=0}^{\infty} \frac{(-1)^k}{n!k!} (e^{i \pi m l / 2} (\zeta_{m,l}^{\Delta *})^n \hat{a}^{\dagger k} \hat{a}^{(k + n)} + e^{-i \pi m l / 2} (\zeta_{m,l}^{\Delta})^n\hat{a}^{\dagger (k + n)} \hat{a}^{k})
+\end{align}
+
+
+% This leads to a closed form for the $\sigma_{\mathrm{eff}}^x$ and $\sigma_{\mathrm{eff}}^y$ operators
+% \begin{align*}
+%     \sigma_{\mathrm{eff}}^x & = \mathcal{N}_{\mu_L}^{\Delta} \sum_{\substack{m, l \in \mathbb{Z} \\ m \equiv \mu \,(\mathrm{mod}\, 2)}} e^{-i \pi m l / 2} \, e^{-\frac{1}{2} \abs{\zeta_{m,l}}^2} \left(e^{\zeta_{m,l}^\Delta \hat{a}^\dagger} - 1\right) \ket{0}\bra{0} \\
+% \end{align*}
+
+\newpage
+\printbibliography
+
+\end{document}

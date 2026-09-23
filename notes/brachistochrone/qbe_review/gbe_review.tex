@@ -1,0 +1,105 @@
+\documentclass[11pt]{article}
+
+% ---------- Packages ----------
+\usepackage[utf8]{inputenc}   % UTF-8 encoding
+\usepackage[T1]{fontenc}      % Better font encoding
+\usepackage{lmodern}          % Improved font
+\usepackage{amsmath, amssymb, amsfonts} % Math packages
+\usepackage{graphicx}         % Include images
+\usepackage{geometry}         % Page layout
+\usepackage{hyperref}         % Clickable links
+\usepackage{physics}          % Bra-ket, derivatives, etc. (optional)
+\usepackage{bm}               % Bold math symbols
+\usepackage{doi}
+\usepackage[backend=biber,style=numeric]{biblatex}
+
+\addbibresource{references.bib}
+
+\allowdisplaybreaks
+% \setlength{\parindent}{0pt}
+
+% ---------- Page Setup ----------
+\geometry{margin=1in}
+
+% ---------- Title Info ----------
+\title{Quantum Brachistochrone Equation}
+\author{Aidan Curtis}
+\date{\today}
+
+% ---------- Document ----------
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+In 1696, Johann Bernouli challenged his fellow contemporaries with a problem,
+\begin{quote}
+    Given two points A and B in a vertical plane, what is the curve traced out by a point acted on only by gravity, which starts at A and reaches B in the shortest time.
+\end{quote}
+At the time, the general mathematical apparatus for solving such a problem had not yet been developed and yet Bernouli still somehow solved it. Today, we call this the Brachistochrone problem and are equiped with the toolset of variational calculus to help us solve the problem. More broadly, the whole approach of using variational methods to solve classical mechanics problems is the basis for Lagragian mechanics.
+
+310 years after Bernouli proposed the problems, Carlini et. al. \cite{carlini2006TimeOptimal} applied it quantum mechanics in what we call the Quantum Brachistochrone Equation (QBE).
+
+This brief review will build up to the QBE from first principles. The goal of this work is to motivate the connection between the classical equation and the quantum one. My hope is that readers will eventually understand the deep structural similarities between the classical and quauntum realms. I wish to be clear with the mathematics and will go through every derivation step-by-step and explain each part thoroughly. This document is written to be self-contained and at the level of an advanced undergraduate student.
+
+In section A, we will go through some of the mathematical prerequistes needed for solving this problem. In section B, we will discuss the classical Brachistochrone problem and it's solution. In section C, we pivot to the QBE formalism and derive the key equations. In section D, we discuss a nice application of the QBE formalism to bosonic systems for quantum state preparation and gates.
+
+\section{Mathematical Preliminaries}
+\subsection{Linear Algebra}
+Perhaps the most ubiquitius primitive structure after the set in modern applied mathematics is the vector space.
+
+\section{Classical Brachistochrone Problem}
+Since we have now discussed the mathematics needed to solve the Brachistochrone problem, let us state the problem formally. We wish to find a curve $y$ that minimizes the functional
+\begin{equation}
+    T[y] = \int dt
+\end{equation}
+% \begin{equation}
+%     T[y] = \int_{a}^{b} \frac{ds}{v}
+% \end{equation}
+subject to the boundary conditions
+$$y(a) = A, \quad y(b) = B.$$
+under a uniform gravitational potential, $V = mgy$. This can be visualized in Figure X. We can change the variable we integrate over by relating the infinitessimal line element $ds$ to the infinitessimal time element via velocity,
+\begin{equation*}
+    \frac{ds}{dt} = v \Rightarrow dt = \frac{ds}{v}
+\end{equation*}
+So, Eq. \ref{two} can be written as
+\begin{equation}
+    T[y] = \int \frac{ds}{v}
+\end{equation}
+The line element $ds$ expands as
+\begin{equation*}
+    ds = \sqrt{(dx)^2 + (dy)^2} = dx \sqrt{1 + \left ( \frac{dy}{dx} \right )^2} = dx \sqrt{1 + (y^{\prime})^2}
+\end{equation*}
+Finally, $v$ must be written in terms of $x, y,$ and $y^\prime$. There is no energy source so the potential energy must be equal to the kinetic energy. Thus,
+\begin{equation*}
+    \frac{1}{2} m v^2 = mgy \Rightarrow v = \sqrt{2gy}
+\end{equation*}
+Now eq. \ref{} can be written as
+\begin{equation}
+    T[y] = \int_{a}^{b} \sqrt{\frac{1 + (y^{\prime})^2}{2gy}} dx
+\end{equation}
+where the Lagragian is
+\begin{equation}
+    L(y, y^\prime) = \sqrt{\frac{1 + (y^{\prime})^2}{2gy}}
+\end{equation}
+The variation of eq \ref{} w.r.t $y$ must be solved for.
+\begin{align*}
+    \frac{\partial L}{\partial y}        & = \frac{\partial}{\partial y} \left ({\frac{1 + (y^{\prime})^2}{2gy}} \right )^{1/2}                                           \\
+                                         & = \frac{1}{2} \left ({\frac{1 + (y^{\prime})^2}{2gy}} \right )^{-1/2} \left ( -\frac{2g(1 + (y^{\prime})^2)}{(2gy)^2} \right ) \\
+                                         & = -\frac{1}{2y} \frac{2g\sqrt{1 + (y^\prime)^2}}{2g\sqrt{2gy}}                                                                 \\
+                                         & = -\frac{1}{2y} \sqrt{\frac{1 + (y^\prime)^2}{2g}}                                                                             \\
+    \frac{\partial L}{\partial y^\prime} & = \frac{\partial}{\partial y^\prime} \left ({\frac{1 + (y^{\prime})^2}{2gy}} \right )^{1/2}                                    \\
+                                         & = \frac{1}{2} \left ({\frac{1 + (y^{\prime})^2}{2gy}} \right )^{-1/2} \left ( \frac{4gyy^{\prime}}{4g^2y^2} \right )           \\
+                                         & = \frac{1}{2} \left ({\frac{1 + (y^{\prime})^2}{2gy}} \right )^{-1/2} \left ( \frac{y^{\prime}}{gy} \right )                   \\
+                                         & = -\frac{1}{2} \frac{2g\sqrt{1 + (y^\prime)^2}}{2g\sqrt{2gy}}                                                                  \\
+                                         & = \frac{y^\prime}{\sqrt{2gy(1 + (y^\prime)^2)}}
+\end{align*}
+This is an unconstrained variational calculus problem, but we must reformat Eq. (1) in a way that allows us to solve the problem.
+
+% 310 years after Bernouli wrote down the Brachistochrone problem statement, Carlini et. al. \cite{carlini2006TimeOptimal} applied it quantum mechanics.
+
+
+\newpage
+\printbibliography
+
+\end{document}
