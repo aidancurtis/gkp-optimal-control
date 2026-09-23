@@ -7,7 +7,7 @@ import numpy as np
 from matplotlib.axes import Axes
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-from .utils import compute_wigner
+from .utils import StateLike, compute_wigner, to_qarray
 
 
 def set_plot_style() -> None:
@@ -23,32 +23,38 @@ def set_plot_style() -> None:
     plt.rcParams["text.latex.preamble"] = r"\usepackage{braket}\usepackage{amsmath}"
 
 
-def _is_ket(state: jnp.ndarray) -> bool:
-    """Return True if ``state`` is a 1D ket or column-vector ket."""
-    if state.ndim == 1:
+def _is_ket(arr: jnp.ndarray) -> bool:
+    """Return True if ``arr`` is a 1D ket or column-vector ket.
+
+    Takes a raw array, not a ``Qarray``: attribute access on a ``Qarray``
+    goes through its ``__getattr__`` fallback, so ``.ndim`` there resolves to
+    ``jnp.ndim`` (a function, never equal to 1 or 2) rather than an integer.
+    Coerce with :func:`utils.to_qarray` and read ``.data`` before calling.
+    """
+    if arr.ndim == 1:
         return True
-    if state.ndim == 2 and state.shape[1] == 1:
+    if arr.ndim == 2 and arr.shape[1] == 1:
         return True
     return False
 
 
-def _photon_probs(state: jnp.ndarray) -> np.ndarray:
+def _photon_probs(state: StateLike) -> np.ndarray:
     """Return the photon-number probability distribution ``P(n)`` as a numpy array.
 
-    Accepts either a 1D ket ``(n_fock,)``, a column-vector ket ``(n_fock, 1)``,
-    or a density matrix ``(n_fock, n_fock)``. For kets, ``P(n) = |c_n|^2``.
-    For density matrices, ``P(n) = rho_{nn}``.
+    Accepts a ``Qarray``, a 1D ket ``(n_fock,)``, a column-vector ket
+    ``(n_fock, 1)``, or a density matrix ``(n_fock, n_fock)``. For kets,
+    ``P(n) = |c_n|^2``. For density matrices, ``P(n) = rho_{nn}``.
     """
-    if _is_ket(state):
-        ket = jnp.asarray(state).reshape(-1)
-        probs = jnp.abs(ket) ** 2
+    arr = jnp.asarray(to_qarray(state).data)
+    if _is_ket(arr):
+        probs = jnp.abs(arr.reshape(-1)) ** 2
     else:
-        probs = jnp.real(jnp.diag(jnp.asarray(state)))
+        probs = jnp.real(jnp.diag(arr))
     return np.asarray(probs)
 
 
 def plot_wigner(
-    state: jnp.ndarray | None = None,
+    state: StateLike | None = None,
     x_bound: float | None = None,
     y_bound: float | None = None,
     ax: Axes | None = None,
@@ -73,8 +79,9 @@ def plot_wigner(
 
     Parameters
     ----------
-    state : jnp.ndarray, optional
+    state : jaxquantum.Qarray or array_like, optional
         Ket (1D or column-vector) or density matrix of the bosonic state.
+        Coerced by :func:`utils.to_qarray`, so either representation works.
         Required when ``wigner`` is not supplied.
     x_bound, y_bound : float, optional
         Half-widths of the :math:`q`- and :math:`p`-axes. Required when
@@ -126,9 +133,6 @@ def plot_wigner(
     if ax is None:
         _, ax = plt.subplots(figsize=(8, 6))
 
-    divider = make_axes_locatable(ax)
-    cax = divider.append_axes("right", size="5%", pad=0.05)
-
     wmax = float(np.abs(wigner).max())
     if wmax == 0.0:
         norm = mpl_colors.TwoSlopeNorm(vmin=-1e-12, vcenter=0.0, vmax=1e-12)
@@ -147,6 +151,11 @@ def plot_wigner(
     )
 
     if add_colorbar:
+        # Created here, not unconditionally: append_axes always allocates an
+        # Axes, so hoisting it above this branch leaves an empty white box on
+        # every add_colorbar=False call and perturbs tight_layout.
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="5%", pad=0.05)
         cbar = ax.figure.colorbar(cf, ax=ax, cax=cax)
         cbar.set_label(r"$W(q,p)$")
 
@@ -161,7 +170,7 @@ def plot_wigner(
 
 
 def plot_photon_number(
-    state: jnp.ndarray,
+    state: StateLike,
     ax: Axes | None = None,
     title: str | None = None,
     y_lim: float | None = None,
@@ -171,7 +180,7 @@ def plot_photon_number(
 
     Parameters
     ----------
-    state : jnp.ndarray
+    state : jaxquantum.Qarray or array_like
         Ket (1D or column-vector) or density matrix of the bosonic state.
     ax : matplotlib.axes.Axes, optional
         Axes to draw on. If ``None``, a new figure and axes are created.

@@ -132,7 +132,7 @@ def animate_wigner(
 
         if add_colorbar:
             cbar = fig.colorbar(cf_holder[0], ax=ax, cax=cax)
-            cbar.set_label(r"$W(\alpha)$")
+            cbar.set_label(r"$W(q,p)$")
 
         def update_contour(frame_idx):
             cf_holder[0].remove()
@@ -156,7 +156,7 @@ def animate_wigner(
 
         if add_colorbar:
             cbar = fig.colorbar(mesh, ax=ax, cax=cax)
-            cbar.set_label(r"$W(\alpha)$")
+            cbar.set_label(r"$W(q,p)$")
 
         def update_mesh(frame_idx):
             mesh.set_array(frames[frame_idx].ravel())

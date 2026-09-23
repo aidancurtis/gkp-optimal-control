@@ -1,0 +1,25 @@
+# A transmon-cavity device in the regime SNAP control was designed for
+# (cf. Heeres et al., PRL 115, 137002): a large dispersive shift, so that
+# number-selective pulses are microseconds rather than hundreds of them.
+#
+#   params, extras = pulses.load_config("device_snap.toml")
+
+[system]
+chi         = "2 MHz"       # 60x the Eickbusch device
+chi_prime   = "1.5 Hz"
+two_kerr    = "1.0 Hz"
+t1_cavity   = "436 us"
+anharm      = "193 MHz"
+eps_max     = "400 MHz"
+omega_max   = "20 MHz"
+dt          = "1 ns"
+sigma_disp  = "11 ns"
+sigma_qubit = "6 ns"
+n_selective_periods = 8     # 4 is not selective enough once several levels are multiplexed
+
+[snap]
+n_fock  = 16                # cavity truncation
+n_snap  = 6                 # Fock phases optimized per gate: the occupied support
+n_gates = 2                 # SNAP gates, hence 3 displacements
+n_drive = 8                 # levels actually driven; see pulses.snap_waveform
+max_disp = 1.5              # cap on |alpha| so intermediate states stay in the truncation

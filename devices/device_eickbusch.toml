@@ -1,0 +1,35 @@
+# Device parameters of Eickbusch et al., Nat. Phys. 18, 1464 (2022), Table S1.
+# A cavity built for ECD control: chi is deliberately small.
+#
+#   params, extras = pulses.load_config("device_eickbusch.toml")
+#
+# Quoted frequencies pick up the factor 2 pi and are converted to rad/us;
+# ordinary rates (kappa) do not. Bare numbers are taken to be already in
+# internal units, so always write the unit.
+
+[system]
+chi         = "32.8 kHz"    # dispersive shift
+chi_prime   = "1.5 Hz"      # second-order dispersive shift
+two_kerr    = "1.0 Hz"      # Table S1 quotes 2 K_c; alias halves it
+t1_cavity   = "436 us"      # inverted into kappa
+anharm      = "193 MHz"     # transmon anharmonicity K
+eps_max     = "400 MHz"     # cavity drive ceiling
+omega_max   = "20 MHz"      # transmon drive ceiling
+dt          = "1 ns"        # DAC sample period
+sigma_disp  = "11 ns"
+sigma_qubit = "6 ns"
+n_sigma_disp  = 4
+n_sigma_qubit = 4
+n_selective_periods = 4
+subtract_pedestal   = true
+
+[ecd]
+alpha0 = 30.0               # intermediate phase-space radius
+n_fock = 60                 # cavity truncation *in the displaced frame*
+tol    = 1e-4               # relative tolerance on |beta|
+
+[snap]
+# Present for completeness; at this chi a SNAP sequence runs ~1 ms against a
+# 436 us cavity T1, which is the whole argument for ECD control.
+n_selective_periods = 8
+dt = "25 ns"
