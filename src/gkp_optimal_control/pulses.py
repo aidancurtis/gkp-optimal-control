@@ -1412,7 +1412,7 @@ def compile_ecd_sequence(
         lowers it per gate when the drive constraint binds.
     frame_sign : float
         Sign of the accumulated :math:`\theta'` in the virtual-Z bookkeeping.
-        ``+1`` is the convention verified in :mod:`validate_pulses`; flip it
+        ``+1`` is the convention adopted here; flip it
         only if you change the qubit basis ordering.
     final_displacement : bool
         Whether to append :math:`D(\beta_{N+1}/2)` when ``betas`` has ``N+1``
@@ -1438,7 +1438,7 @@ def compile_ecd_sequence(
     With this rule the compiled sequence reproduces the ideal circuit's
     :math:`|g\rangle`-projected cavity state exactly, and its
     :math:`P(|g\rangle)`, for arbitrary :math:`\theta'` (verified to machine
-    precision in :func:`validate_pulses.test_frame_rule`). A leftover Z remains
+    precision). A leftover Z remains
     on the qubit at the end, which is a global phase once the qubit is
     projected onto :math:`|g\rangle` -- the postselection the experiment
     performs anyway.

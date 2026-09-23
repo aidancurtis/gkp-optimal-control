@@ -722,27 +722,6 @@ def _add_key(noncomm):
     return (labels, dagger_flag, str(noncomm))
 
 
-def reorder_add(expr, mode_order=[]):
-    """Return an *Add* with
-         1. each term's non‑commutative tail internally re‑ordered via
-            `reorder_mul` (same‑mode factors adjacent, obeying *mode_order*)
-         2. additive terms sorted so dagger‑pairs appear next to each other.
-
-    Note: **does not modify coefficients**; collect first, reorder later.
-    """
-    if not isinstance(expr, sp.Add):
-        return expr
-
-    new_terms = []
-    for t in expr.args:
-        comm, nc = _split_comm_noncomm(t)
-        nc_new   = reorder_mul(nc, mode_order)
-        new_terms.append(comm*nc_new)
-
-    # sort additive terms by canonical key
-    new_terms.sort(key=lambda term: _add_key(_split_comm_noncomm(term)[1]))
-    return sp.Add(*new_terms, evaluate=False)
-
 
 # ---------------------------------------------------------------------
 # Coefficients utils

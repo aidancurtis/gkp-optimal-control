@@ -112,22 +112,3 @@ def cavity_transmon_drift(
     )
 
 
-@partial(jax.jit, static_argnames=("n_cav", "n_tr"))
-def cavity_transmon_iq_controls(n_cav: int, n_tr: int) -> jnp.ndarray:
-    r"""I/Q drives on both cavity and transmon.
-
-    Returns
-    -------
-    jnp.ndarray
-        Stack of shape ``(4, n_cav * n_tr, n_cav * n_tr)``: cavity-I,
-        cavity-Q, transmon-I, transmon-Q.
-    """
-    a, adag, b, bdag = _cavity_transmon_modes(n_cav, n_tr)
-    return jnp.stack(
-        [
-            a + adag,
-            1j * (a - adag),
-            b + bdag,
-            1j * (b - bdag),
-        ]
-    )
