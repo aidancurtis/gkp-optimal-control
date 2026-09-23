@@ -575,6 +575,8 @@ dependencies = [
     { name = "jupyter" },
     { name = "matplotlib" },
     { name = "numpy" },
+    { name = "optax" },
+    { name = "optimistix" },
     { name = "sympy" },
 ]
 
@@ -599,6 +601,8 @@ requires-dist = [
     { name = "jupyter", marker = "extra == 'notebooks'", specifier = ">=1.1.1" },
     { name = "matplotlib", specifier = ">=3.10.8" },
     { name = "numpy", specifier = ">=1.26" },
+    { name = "optax", specifier = ">=0.2.8" },
+    { name = "optimistix", specifier = ">=0.1.0" },
     { name = "sympy", specifier = ">=1.14.0" },
 ]
 provides-extras = ["notebooks"]
