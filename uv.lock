@@ -575,8 +575,6 @@ dependencies = [
     { name = "jupyter" },
     { name = "matplotlib" },
     { name = "numpy" },
-    { name = "qutip-jax" },
-    { name = "qutip-qtrl" },
     { name = "sympy" },
 ]
 
@@ -601,8 +599,6 @@ requires-dist = [
     { name = "jupyter", marker = "extra == 'notebooks'", specifier = ">=1.1.1" },
     { name = "matplotlib", specifier = ">=3.10.8" },
     { name = "numpy", specifier = ">=1.26" },
-    { name = "qutip-jax", specifier = ">=0.1.1" },
-    { name = "qutip-qtrl", specifier = ">=0.1.5" },
     { name = "sympy", specifier = ">=1.14.0" },
 ]
 provides-extras = ["notebooks"]
@@ -2029,36 +2025,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/1c/17/b1724f33d1fc52a11895d6649bcb9df4015c0ff521a04e82f01ff1680df3/qutip-5.2.3-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:ad70ceac878dd9c35b84697e83936e5f4e7c9659987a8a6104d7ecfd08e3ed51", size = 11073582, upload-time = "2026-01-26T17:30:37.992Z" },
     { url = "https://files.pythonhosted.org/packages/db/f6/66a3355fe828b7342c86d6d56c741e57a15c98a13512d3016cd88733d370/qutip-5.2.3-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:ed6c54a04aa02e8b22f5bd31e0314e6bfe22e3c11697910816aa38e2c51eeb30", size = 32908243, upload-time = "2026-01-26T17:30:40.328Z" },
     { url = "https://files.pythonhosted.org/packages/14/bd/2912700775e1fd2d7f4b4e8d099dd32f04b90c7f178fc3d59f8fe0bb78d7/qutip-5.2.3-cp313-cp313-win_amd64.whl", hash = "sha256:53ca716ac2b0ceabc7e5ed51b593cb79d42faa31a6fa72c47681fc491140a058", size = 10703167, upload-time = "2026-01-26T17:30:42.348Z" },
-]
-
-[[package]]
-name = "qutip-jax"
-version = "0.1.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "diffrax" },
-    { name = "equinox" },
-    { name = "jax" },
-    { name = "qutip" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/c6/91/837887d247addb171d45f4a9ec56721bb14e84f378609fb65076457f052c/qutip_jax-0.1.1.tar.gz", hash = "sha256:9177fdd58dd7320166f326ad74395c7883412f459a6cc3a470d4d65271432876", size = 33809, upload-time = "2025-05-29T14:54:36.821Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/42/1a/487656f04bc5ae581047aa3c08dba24e42346f2f094ddd12de22211ef323/qutip_jax-0.1.1-py3-none-any.whl", hash = "sha256:5db62504193298ebc197c03a98cdeaccf952811631de62b34546817594fbd6d4", size = 27991, upload-time = "2025-05-29T14:54:35.18Z" },
-]
-
-[[package]]
-name = "qutip-qtrl"
-version = "0.1.5"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "numpy" },
-    { name = "packaging" },
-    { name = "qutip" },
-    { name = "scipy" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/94/9c/42d49fb157d5dd119289041a7a96561c0df7d82f22de6f00793f39c66ecf/qutip_qtrl-0.1.5.tar.gz", hash = "sha256:e190b7ee60401e9c19245469a450d0340b96639a643a68ef5db05e61c49ed73e", size = 93962, upload-time = "2025-03-28T13:13:11.722Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/50/78/bba307a7a5e9175d2e86ce42f99d1ae6d10c7a908d6763f459dc481207b8/qutip_qtrl-0.1.5-py3-none-any.whl", hash = "sha256:4feb3c5b82c43b3931b998b8aa10b47f26aae208e60f975c2082f1e6111c51e9", size = 90615, upload-time = "2025-03-28T13:13:10.233Z" },
 ]
 
 [[package]]
