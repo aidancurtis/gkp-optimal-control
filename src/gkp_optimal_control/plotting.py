@@ -227,15 +227,55 @@ def plot_photon_number(
 
 def plot_wigner_snapshots(
     states: list,
-    psi_i: StateLike,
     psi_f: StateLike,
-    n_snapshots: int = 5,
-    x_bound: float | None = None,
-    y_bound: float | None = None,
-    title: str | None = None,
+    x_bound: float,
+    y_bound: float,
     grid_points: int = 200,
+    n_snapshots: int = 5,
+    title: str | None = None,
     add_colorbar: bool = True
 ) -> Axes:
+    """Plot a row of Wigner-function snapshots along a state trajectory.
+
+    Samples ``n_snapshots`` states at evenly spaced fractions of the trajectory
+    (from the first state at ``t/T* = 0`` to the last at ``t/T* = 1``), computes
+    the Wigner quasiprobability distribution for each, and renders them side by
+    side as ``pcolormesh``. The color scale is symmetric about zero and normalized
+    to the peak Wigner value of the final state ``psi_f``.
+
+    Parameters
+    ----------
+    states : list
+        Ordered sequence of quantum states representing the time evolution
+        (e.g. the output of a solver). Snapshot indices are selected by rounding
+        evenly spaced fractions up to the nearest index, so the first and last
+        entries are always included.
+    psi_f : StateLike
+        Final (or reference) state used to fix the color-scale bounds. Its peak
+        absolute Wigner value sets the symmetric ``vmin``/``vmax`` applied to
+        every panel, keeping colors comparable across snapshots.
+    n_snapshots : int
+        Number of snapshot panels to draw, by default 5.
+    x_bound : float
+        Half-width of the phase-space grid along the position (q) axis.
+    y_bound : float
+        Half-width of the phase-space grid along the momentum (p) axis.
+    title : str, optional
+        Figure-level title (``suptitle``). If ``None``, no title is added.
+    grid_points : int, optional
+        Number of grid points per axis used when evaluating the Wigner
+        function, by default 200. Higher values increase resolution and cost.
+    add_colorbar : bool, optional
+        If ``True`` (default), append a shared vertical colorbar labeled
+        ``W(q, p)`` in an extra axis to the right of the panels.
+
+    Returns
+    -------
+    Axes
+        The array of Matplotlib axes created by ``plt.subplots``. The first
+        ``n_snapshots`` entries hold the Wigner panels (left to right in time);
+        the final entry is the colorbar axis.
+    """
 
     fracs = np.linspace(0.0, 1.0, n_snapshots)
     slices = [int(np.ceil(frac * (len(states)-1))) for frac in fracs]
