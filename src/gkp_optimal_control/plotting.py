@@ -232,7 +232,6 @@ def plot_wigner_snapshots(
     n_snapshots: int = 5,
     x_bound: float | None = None,
     y_bound: float | None = None,
-    ax: Axes | None = None,
     title: str | None = None,
     grid_points: int = 200,
     add_colorbar: bool = True
@@ -240,9 +239,10 @@ def plot_wigner_snapshots(
 
     fracs = np.linspace(0.0, 1.0, n_snapshots)
     slices = [int(np.ceil(frac * (len(states)-1))) for frac in fracs]
+    gs = {'width_ratios': [1] * len(fracs) + [0.07]}
 
-    if ax is None:
-        fig, ax = plt.subplots(1, len(fracs), figsize=(10, 4))
+    fig, ax = plt.subplots(1, len(fracs) + 1, figsize=(14, 3.75),
+                           gridspec_kw=gs, constrained_layout=True,)
 
     if x_bound is None or y_bound is None:
         raise ValueError("When passing a state, x_bound and y_bound are required.")
@@ -251,6 +251,7 @@ def plot_wigner_snapshots(
     _, _, wigner = compute_wigner(psi_f, x_bound, y_bound, grid_points)
     wmax = float(np.abs(wigner).max())
     norm = mpl_colors.TwoSlopeNorm(vmin=-wmax, vcenter=0.0, vmax=wmax)
+    ticks = [-5, -2.5, 0, 2.5, 5]
 
     # compute wigner frams
     x, y, frames = wigner_trajectory(states, x_bound, y_bound, grid_points, slices)
@@ -269,12 +270,17 @@ def plot_wigner_snapshots(
         # add axes labels
         ax[i].set_title(rf"$t/T^*$ = {frac:.2f}")
         ax[i].set_xlabel("q")
+        ax[i].set_xticks(ticks)
+        ax[i].set_yticks(ticks)
+
         if i == 0:
             ax[i].set_ylabel("p")
+        else:
+            ax[i].set_yticklabels([])
 
-    # if add_colorbar:
-    #     cbar = ax[-1].figure.colorbar(cf, ax=ax, fraction=0.046, pad=0.04)
-    #     cbar.set_label(r"$W(q,p)$")
+    if add_colorbar:
+        cbar = fig.colorbar(cf, cax=ax[-1])
+        cbar.set_label(r"$W(q,p)$")
 
     if title:
         fig.suptitle(title)

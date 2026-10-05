@@ -206,7 +206,7 @@ def wigner_trajectory(
 
     if slices is None:
         slices = np.arange(states_arr.shape[0])
-    print(slices)
+
     xvec, yvec = _wigner_grid(x_bound, y_bound, grid_points)
     av, bv = _alpha_grid(xvec, yvec)
 

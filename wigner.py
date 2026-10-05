@@ -40,7 +40,6 @@ grid_points = 200
 tlist = jnp.linspace(0.0, min_time, n_time)
 states = jqt.sesolve(H_opt, rho0, tlist)
 
-plot_wigner_snapshots(states.data, rho0.data, rhof.data, n_snapshots=6, x_bound=x_bound,
+plot_wigner_snapshots(states.data, rho0.data, rhof.data, n_snapshots=5, x_bound=x_bound,
                       y_bound=y_bound, grid_points=grid_points)
-# plt.tight_layout()
 plt.show()
