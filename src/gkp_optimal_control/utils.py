@@ -165,6 +165,7 @@ def wigner_trajectory(
     x_bound: float,
     y_bound: float,
     grid_points: int = 100,
+    slices: list[int] | None = None
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     r"""Compute Wigner distributions along a trajectory of states.
 
@@ -203,11 +204,14 @@ def wigner_trajectory(
     else:
         states_arr = jnp.asarray(states)
 
+    if slices is None:
+        slices = np.arange(states_arr.shape[0])
+    print(slices)
     xvec, yvec = _wigner_grid(x_bound, y_bound, grid_points)
     av, bv = _alpha_grid(xvec, yvec)
 
     frames = []
-    for k in range(states_arr.shape[0]):
+    for k in slices:
         qa = to_qarray(states_arr[k])
         frames.append(np.asarray(_JACOBIAN * jqt.wigner(qa, av, bv)))
 

@@ -7,7 +7,7 @@ import numpy as np
 from matplotlib.axes import Axes
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-from .utils import StateLike, compute_wigner, to_qarray
+from .utils import StateLike, compute_wigner, to_qarray, wigner_trajectory
 
 
 def set_plot_style() -> None:
@@ -222,5 +222,61 @@ def plot_photon_number(
 
     if title:
         ax.set_title(title)
+
+    return ax
+
+def plot_wigner_snapshots(
+    states: list,
+    psi_i: StateLike,
+    psi_f: StateLike,
+    n_snapshots: int = 5,
+    x_bound: float | None = None,
+    y_bound: float | None = None,
+    ax: Axes | None = None,
+    title: str | None = None,
+    grid_points: int = 200,
+    add_colorbar: bool = True
+) -> Axes:
+
+    fracs = np.linspace(0.0, 1.0, n_snapshots)
+    slices = [int(np.ceil(frac * (len(states)-1))) for frac in fracs]
+
+    if ax is None:
+        fig, ax = plt.subplots(1, len(fracs), figsize=(10, 4))
+
+    if x_bound is None or y_bound is None:
+        raise ValueError("When passing a state, x_bound and y_bound are required.")
+
+    # find bounds for wigner plot based on final state
+    _, _, wigner = compute_wigner(psi_f, x_bound, y_bound, grid_points)
+    wmax = float(np.abs(wigner).max())
+    norm = mpl_colors.TwoSlopeNorm(vmin=-wmax, vcenter=0.0, vmax=wmax)
+
+    # compute wigner frams
+    x, y, frames = wigner_trajectory(states, x_bound, y_bound, grid_points, slices)
+    cf = None
+    for i, frac in enumerate(fracs):
+        cf = ax[i].pcolormesh(
+            x,
+            y,
+            frames[i],
+            cmap="RdBu_r",
+            norm=norm,
+            shading="gouraud",  # smooth interpolation; use "auto" for pixelated
+            rasterized=True,  # important if saving to PDF
+        )
+
+        # add axes labels
+        ax[i].set_title(rf"$t/T^*$ = {frac:.2f}")
+        ax[i].set_xlabel("q")
+        if i == 0:
+            ax[i].set_ylabel("p")
+
+    # if add_colorbar:
+    #     cbar = ax[-1].figure.colorbar(cf, ax=ax, fraction=0.046, pad=0.04)
+    #     cbar.set_label(r"$W(q,p)$")
+
+    if title:
+        fig.suptitle(title)
 
     return ax
