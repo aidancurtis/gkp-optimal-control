@@ -16,6 +16,14 @@ _SQRT2 = np.sqrt(2.0)
 _JACOBIAN = 0.5
 
 
+def _to_array(s):
+    if isinstance(s, jqt.Qarray):
+        if getattr(s, "is_sparse_bcoo", False):
+            s = s.to_dense()
+        return s.data
+    return jnp.asarray(s)
+
+
 @lru_cache(maxsize=16)
 def _wigner_grid(x_bound: float, y_bound: float, grid_points: int) -> tuple[np.ndarray, np.ndarray]:
     """Return cached ``(xvec, yvec)`` quadrature grids for a given grid spec."""
@@ -82,10 +90,6 @@ def to_qarray(state: StateLike) -> jqt.Qarray:
             "Use wigner_trajectory for a batch of states."
         )
     return jqt.Qarray.create(arr)
-
-
-# Retained so existing imports of the private name keep working.
-_to_qarray = to_qarray
 
 
 def to_ket(state: StateLike) -> jnp.ndarray:
@@ -202,7 +206,7 @@ def wigner_trajectory(
     if isinstance(states, (list, tuple)):
         states_arr = jnp.stack([jnp.asarray(s) for s in states])
     else:
-        states_arr = jnp.asarray(states)
+        states_arr = _to_array(states)
 
     if slices is None:
         slices = np.arange(states_arr.shape[0])

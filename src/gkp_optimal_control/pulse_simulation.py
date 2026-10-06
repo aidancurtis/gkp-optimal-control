@@ -69,6 +69,7 @@ __all__ = [
     "gate_boundary_states",
     "wigner_frames",
     "lab_extent",
+    "check_compile_convention"
 ]
 
 _SQRT2 = np.sqrt(2.0)
@@ -400,6 +401,28 @@ def _make_stepper(h_static, ops, dt, method: str):
     else:
         raise ValueError(f"method must be 'expm' or 'eigh'; got {method!r}")
     return prop
+
+
+def check_compile_convention(result, params, psi_target, n_fock, fid_tol=5e-3, **compile_kw):
+    """Linear compile must reproduce the ideal circuit's fidelity.
+
+    Stands in for the missing ``verify_ecd_pulse``: compiles ``result`` with
+    chi' = K = kappa = 0, simulates it in the displaced frame, and asserts the
+    joint fidelity (|g> block, unnormalized) matches ``result.fidelity``. A
+    wrong virtual-Z sign or beta convention shows up as a few-percent gap.
+    """
+    p_lin = params.replace(kappa=0.0, chi_prime=0.0, kerr=0.0)
+    seq = _pulses.compile_from_result(result, params=p_lin, **compile_kw)
+    r = simulate_sequence(seq, n_fock=n_fock, save_every=10**9)
+    target = np.asarray(psi_target, dtype=complex).reshape(-1)
+    pt = _displace_np(n_fock, -r.alpha[-1]) @ target
+    F = float(abs(np.vdot(pt, r.blocks()[-1, 0])) ** 2)
+    if abs(F - result.fidelity) >= fid_tol:
+        raise AssertionError(
+            f"compiled F = {F:.5f} vs ideal {result.fidelity:.5f}; "
+            "check frame_sign and the beta convention"
+        )
+    return F
 
 
 def simulate_sequence(

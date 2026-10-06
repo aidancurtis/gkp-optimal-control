@@ -68,9 +68,11 @@ Example
 
 from __future__ import annotations
 
+import functools
+import importlib
 import json
 import time
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
 
 import numpy as np
@@ -106,17 +108,53 @@ _DATACLASS_REGISTRY: dict[str, type] = {
 
 
 def _to_array(x) -> np.ndarray | None:
-    """Coerce a state/array-like (incl. a ``Qarray``) to a NumPy array."""
+    """Coerce a state/array-like (incl. a jaxquantum ``Qarray``) to a NumPy array.
+
+    ``Qarray`` doesn't expose its data under one stable name across jaxquantum
+    versions, so try the known spellings. Calling ``np.asarray`` on a ``Qarray``
+    itself treats it as a sequence and builds an object array of junk, so a
+    non-numeric result is an error, not something to save.
+    """
     if x is None:
         return None
-    if hasattr(x, "array"):  # jaxquantum.Qarray exposes `.array`
-        x = x.array
-    return np.asarray(x)
+    if isinstance(x, (list, tuple)):  # batch of states, e.g. [gkp_0, gkp_1]
+        return np.stack([_to_array(s) for s in x])
+    if not isinstance(x, np.ndarray):
+        for attr in ("data", "array"):
+            v = getattr(x, attr, None)
+            if v is not None and not callable(v) and hasattr(v, "shape"):
+                x = v
+                break
+        else:
+            impl = getattr(x, "_impl", None)
+            v = getattr(impl, "_data", None)
+            if v is not None and hasattr(v, "shape"):
+                x = v
+    arr = np.asarray(x)
+    if arr.dtype == object:
+        raise TypeError(
+            f"could not extract a numeric array from {type(x).__name__}; "
+            "pass the raw array (e.g. np.asarray(state.data)) instead"
+        )
+    return arr
 
 
-def _encode_array(a: np.ndarray) -> dict:
+def _encode_array(a: np.ndarray, _where: str = "array") -> dict:
     """Encode a (possibly complex) ndarray as a JSON-able dict."""
     a = np.asarray(a)
+    if a.dtype == object:
+        # Object arrays come from np.asarray() on ragged or non-numeric data.
+        # .tolist() would dump the raw Python objects into JSON, so recover a
+        # numeric array if every element is a number, else fail with a location.
+        elems = list(a.flat)
+        if elems and all(isinstance(v, (int, float, complex, np.number)) for v in elems):
+            a = np.asarray(elems).reshape(a.shape)
+        else:
+            kinds = sorted({type(v).__name__ for v in elems})
+            raise TypeError(
+                f"cannot serialize {_where}: object-dtype array of shape {a.shape} "
+                f"holding {kinds}; this field should be numeric"
+            )
     if np.iscomplexobj(a):
         return {
             "__array__": "complex",
@@ -143,23 +181,108 @@ def _decode_array(o: dict) -> np.ndarray:
     return np.ascontiguousarray(arr).reshape(shape)
 
 
-def _to_jsonable(obj):
+def _callable_tag(fn) -> dict:
+    """Encode a callable by its import path (the code itself can't go in JSON)."""
+    if isinstance(fn, functools.partial):
+        return {
+            "__partial__": _callable_tag(fn.func),
+            "args": _to_jsonable(list(fn.args)),
+            "kwargs": _to_jsonable(dict(fn.keywords)),
+        }
+    inner = getattr(fn, "__wrapped__", fn)  # unwrap jax.jit / functools.wraps
+    mod = getattr(inner, "__module__", None) or ""
+    qual = getattr(inner, "__qualname__", None) or getattr(inner, "__name__", None) or repr(inner)
+    return {"__callable__": f"{mod}:{qual}"}
+
+
+def _resolve_callable(tag: str):
+    """Re-import a callable from ``module:qualname``.
+
+    Lambdas, closures and anything that can't be re-imported come back as the
+    tag string -- the saved record stays readable, it just can't call them.
+    """
+    mod, _, qual = tag.partition(":")
+    if not mod or "<" in qual:  # <lambda>, <locals>
+        return tag
+    try:
+        obj = importlib.import_module(mod)
+        for part in qual.split("."):
+            obj = getattr(obj, part)
+        return obj
+    except (ImportError, AttributeError):
+        return tag
+
+
+def _to_jsonable(obj, _where: str = "result"):
     """Recursively convert a result field tree into JSON-serializable data."""
+    if obj is None or isinstance(obj, (bool, int, float, str)):
+        return obj
     if isinstance(obj, np.ndarray):
-        return _encode_array(obj)
+        return _encode_array(obj, _where)
     if isinstance(obj, np.generic):
         return obj.item()
     if is_dataclass(obj) and not isinstance(obj, type):
         cls = type(obj)
+        # Walk fields() rather than asdict() so nested dataclasses keep their tags.
         return {
             "__dataclass__": f"{cls.__module__}.{cls.__name__}",
-            "data": {k: _to_jsonable(v) for k, v in asdict(obj).items()},
+            "data": {
+                f.name: _to_jsonable(getattr(obj, f.name), f"{_where}.{f.name}")
+                for f in fields(obj)
+            },
         }
     if isinstance(obj, dict):
-        return {k: _to_jsonable(v) for k, v in obj.items()}
+        return {str(k): _to_jsonable(v, f"{_where}[{k!r}]") for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set, frozenset)):
+        return [_to_jsonable(v, f"{_where}[{i}]") for i, v in enumerate(obj)]
+    if isinstance(obj, Path):
+        return str(obj)
+    if hasattr(obj, "__array__"):  # jax.Array, Qarray-likes
+        return _encode_array(_to_array(obj), _where)
+    if callable(obj):
+        return _callable_tag(obj)
+    raise TypeError(
+        f"cannot serialize {_where} of type {type(obj).__name__}; "
+        "extend _to_jsonable or drop it from the result"
+    )
+
+
+def _find_unserializable(obj, where: str = "") -> str | None:
+    """Path to the first value json can't encode (for error messages)."""
+    if obj is None or isinstance(obj, (bool, int, float, str)):
+        return None
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            hit = _find_unserializable(v, f"{where}[{k!r}]")
+            if hit is not None:
+                return hit
+        return None
     if isinstance(obj, (list, tuple)):
-        return [_to_jsonable(v) for v in obj]
-    return obj
+        for i, v in enumerate(obj):
+            hit = _find_unserializable(v, f"{where}[{i}]")
+            if hit is not None:
+                return hit
+        return None
+    return f"{where} = {obj!r}"
+
+
+def _resolve_dataclass(tag: str) -> type:
+    """Find the dataclass named ``module.ClassName`` (registry first, then import)."""
+    cls = _DATACLASS_REGISTRY.get(tag)
+    if cls is not None:
+        return cls
+    mod, _, name = tag.rpartition(".")
+    try:
+        cls = getattr(importlib.import_module(mod), name)
+    except (ImportError, AttributeError) as err:
+        raise ValueError(
+            f"cannot reconstruct dataclass {tag!r}: it no longer exists at that path "
+            "(renamed or moved?). Add it to _DATACLASS_REGISTRY under the old name."
+        ) from err
+    if not is_dataclass(cls):
+        raise ValueError(f"{tag!r} is not a dataclass")
+    _DATACLASS_REGISTRY[tag] = cls
+    return cls
 
 
 def _from_jsonable(obj):
@@ -167,15 +290,17 @@ def _from_jsonable(obj):
     if isinstance(obj, dict):
         tag = obj.get("__dataclass__")
         if tag is not None:
-            cls = _DATACLASS_REGISTRY.get(tag)
-            if cls is None:
-                raise ValueError(
-                    f"cannot reconstruct dataclass {tag!r}; is the originating "
-                    "class registered in _DATACLASS_REGISTRY?"
-                )
+            cls = _resolve_dataclass(tag)
             return cls(**_from_jsonable(obj["data"]))
         if obj.get("__array__") in ("real", "complex"):
             return _decode_array(obj)
+        if "__callable__" in obj:
+            return _resolve_callable(obj["__callable__"])
+        if "__partial__" in obj:
+            fn = _from_jsonable(obj["__partial__"])
+            if not callable(fn):
+                return obj  # couldn't re-import the wrapped function
+            return functools.partial(fn, *_from_jsonable(obj["args"]), **_from_jsonable(obj["kwargs"]))
         return {k: _from_jsonable(v) for k, v in obj.items()}
     if isinstance(obj, list):
         return [_from_jsonable(v) for v in obj]
@@ -322,27 +447,32 @@ def save_gate_result(
         "metadata": {
             "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "source": "gkp_optimal_control.gate_results",
-            **metadata,
+            **_to_jsonable(metadata, "metadata"),
         },
-        "gate_set": result.gate_set,
+        "gate_set": _to_jsonable(result.gate_set, "gate_set"),
         "n_gates": result.n_gates,
         "n_fock": result.n_fock,
         "n_params": int(np.asarray(result.flat_params).size),
         "fidelity": float(result.fidelity),
-        "initial_state": _to_jsonable(init),
-        "final_state": _to_jsonable(result.final_states),
-        "gate_parameters": {k: _to_jsonable(v) for k, v in result.params.items()},
-        "flat_params": _to_jsonable(result.flat_params),
+        "initial_state": _to_jsonable(init, "initial_state"),
+        "final_state": _to_jsonable(result.final_states, "final_states"),
+        "gate_parameters": _to_jsonable(dict(result.params), "params"),
+        "flat_params": _to_jsonable(result.flat_params, "flat_params"),
         "loss": float(result.loss),
         "leakage": float(result.leakage),
         "best_seed": int(result.best_seed),
-        "per_seed_fidelity": _to_jsonable(result.per_seed_fidelity),
-        "adam_history": _to_jsonable(result.adam_history),
-        "polish_info": _to_jsonable(result.polish_info),
-        "config": _to_jsonable(result.config),
+        "per_seed_fidelity": _to_jsonable(result.per_seed_fidelity, "per_seed_fidelity"),
+        "adam_history": _to_jsonable(result.adam_history, "adam_history"),
+        "polish_info": _to_jsonable(result.polish_info, "polish_info"),
+        "config": _to_jsonable(result.config, "config"),
     }
+    try:
+        text = json.dumps(record, indent=2) + "\n"
+    except TypeError as err:
+        where = _find_unserializable(record)
+        raise TypeError(f"{err} (at record{where})") from err
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(record, indent=2) + "\n")
+    p.write_text(text)
     return p
 
 
