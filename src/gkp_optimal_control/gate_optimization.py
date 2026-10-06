@@ -108,8 +108,24 @@ resulting matrix is not unitary (numerically ``||D^dag D - I|| ~ 0.5`` at
 ``n_fock = 40``); norm is not conserved and an optimizer will happily exploit
 that to report fidelities it has not achieved.
 
-Squeezers :math:`S(r, \varphi)` (CSQ set) are built by :func:`make_squeeze`,
-with the method selected by :func:`csq_sequence`'s ``sq_method`` argument:
+Squeezers :math:`S(r, \varphi)` (CSQ set) are selected by
+:func:`csq_sequence`'s ``sq_method`` argument:
+
+``"fixed"`` (default)
+    Applied to the state without forming :math:`S`. The truncated generator is
+    linear in :math:`r`, so its eigenbasis is fixed, and the phase enters by
+    conjugation with :math:`e^{i\varphi\hat n/2}`:
+
+    .. math::
+        S(r, \varphi) = e^{i\varphi\hat n/2}\, V e^{-i r\lambda} V^\dagger\,
+                         e^{-i\varphi\hat n/2},
+
+    with :math:`(\lambda, V)` the eigendecomposition of
+    :math:`\tfrac{i}{2}(a^2 - a^{\dagger 2})`, computed once
+    (:func:`make_squeeze_apply`). Exact in the truncated space (identical to
+    ``"eig"`` up to round-off), two matrix-vector products per branch instead of
+    an ``eigh`` per gate, and gradients flow through diagonal phases only, so the
+    near-degenerate even/odd spectrum never enters a derivative.
 
 ``"eig"`` (default)
     Eigendecomposition of the Hermitian matrix :math:`iG(r,\varphi)`, where
@@ -154,6 +170,7 @@ __all__ = [
     "optimize_gate_sequence",
     "make_displacement",
     "make_squeeze",
+    "make_squeeze_apply",
     "sequence_history",
     "to_joint_ket",
 ]
@@ -476,6 +493,41 @@ def make_squeeze(n_fock: int, method: str = "eig"):
 
         return squeeze
     raise ValueError(f"unknown sq_method {method!r}; expected 'eig' or 'expm'.")
+
+
+def make_squeeze_apply(n_fock: int) -> Callable:
+    r"""Return a jittable ``(psi, r, phi) -> S(r, phi) psi`` without forming ``S``.
+
+    ``psi`` holds row kets on its last axis, shape ``(..., n_fock)``; ``phi``
+    broadcasts against ``psi.shape[:-1]``, so ``phi`` of shape ``(2,)`` applies
+    a different phase to each qubit block of a ``(K, 2, n_fock)`` state in one
+    call. Uses
+
+    .. math::
+        S(r, \varphi) = e^{i\varphi\hat n/2}\, V e^{-i r\lambda} V^\dagger\,
+                         e^{-i\varphi\hat n/2},
+
+    where ``(lam, V) = eigh(i/2 (a^2 - a^dag^2))`` is computed once. Exact in
+    the truncated space: conjugation by the diagonal ``e^{i theta n}`` maps
+    ``a^2 -> e^{-2 i theta} a^2`` with truncated operators too.
+    """
+    cdtype = jnp.asarray(0j).dtype
+    rdtype = jnp.asarray(0.0).dtype
+    a = jnp.diag(jnp.sqrt(jnp.arange(1, n_fock, dtype=rdtype)), k=1).astype(cdtype)
+    a2 = a @ a
+    lam, v = jnp.linalg.eigh(0.5j * (a2 - a2.conj().T))  # Hermitian
+    v_conj = v.conj()
+    v_t = v.T
+    n = jnp.arange(n_fock, dtype=rdtype)
+
+    def apply(psi, r, phi):
+        phi = jnp.asarray(phi)[..., None]
+        rot = jnp.exp(0.5j * phi * n)                   # e^{i phi n / 2}
+        y = (psi * jnp.conj(rot)) @ v_conj              # V^dag e^{-i phi n/2} psi
+        y = y * jnp.exp(-1j * r * lam)
+        return (y @ v_t) * rot
+
+    return apply
 
 
 def qubit_rotation(theta, phi):
@@ -1037,7 +1089,7 @@ def csq_sequence(
     n_gates: int,
     n_fock: int,
     *,
-    sq_method: str = "eig",
+    sq_method: str = "fixed",
     qubit_target: str = "ground",
     n_leak: int = 5,
     init_squeeze_scale: float = 0.2,
@@ -1057,8 +1109,11 @@ def csq_sequence(
         rotations.
     n_fock : int
         Fock-space truncation.
-    sq_method : {"eig", "expm"}
-        How to build ``S(r, phi)``; see :func:`make_squeeze`.
+    sq_method : {"fixed", "eig", "expm"}
+        How to apply ``S(r, phi)``. ``"fixed"`` (default) applies it in a
+        precomputed eigenbasis without forming the matrix
+        (:func:`make_squeeze_apply`); ``"eig"`` and ``"expm"`` build the full
+        matrix per gate (:func:`make_squeeze`). All three agree to round-off.
     qubit_target : {"ground", "traced"}
         As in :func:`ecd_sequence`.
     n_leak : int
@@ -1068,13 +1123,21 @@ def csq_sequence(
         Standard deviation of the random initial ``r``. Phases are drawn
         uniformly on ``[-pi, pi)``.
     """
-    squeeze = make_squeeze(n_fock, sq_method)
+    if sq_method == "fixed":
+        squeeze_apply = make_squeeze_apply(n_fock)
 
-    def cond_steps(psi, gp):
-        r, phi0, phi1 = gp[0], gp[1], gp[2]
-        out_g = psi[:, 0, :] @ squeeze(r, phi0).T
-        out_e = psi[:, 1, :] @ squeeze(r, phi1).T
-        return [jnp.stack([out_g, out_e], axis=1)]
+        def cond_steps(psi, gp):
+            # Both qubit branches in one pass: phase phi0 on |g>, phi1 on |e>.
+            return [squeeze_apply(psi, gp[0], gp[1:3])]
+
+    else:
+        squeeze = make_squeeze(n_fock, sq_method)
+
+        def cond_steps(psi, gp):
+            r, phi0, phi1 = gp[0], gp[1], gp[2]
+            out_g = psi[:, 0, :] @ squeeze(r, phi0).T
+            out_e = psi[:, 1, :] @ squeeze(r, phi1).T
+            return [jnp.stack([out_g, out_e], axis=1)]
 
     def strengths(gps):
         return jnp.abs(gps[:, 0])
@@ -1703,7 +1766,10 @@ if __name__ == "__main__":
         print(f"{method:>11}: ||S^dag S - I|| = {err:.2e}")
     s_a = make_squeeze(n_fock, "expm")(0.4, 0.7)
     s_b = make_squeeze(n_fock, "eig")(0.4, 0.7)
-    print(f"expm vs eig       : {jnp.abs(s_a - s_b).max():.2e}\n")
+    print(f"expm vs eig       : {jnp.abs(s_a - s_b).max():.2e}")
+    psi_t = jnp.exp(1j * jnp.arange(n_fock)) / jnp.sqrt(n_fock)
+    s_c = make_squeeze_apply(n_fock)(psi_t[None, :], 0.4, 0.7)[0]
+    print(f"fixed vs eig      : {jnp.abs(s_c - s_b @ psi_t).max():.2e}\n")
 
     # Fock |2> with a shallow SNAP circuit.
     fock2 = jnp.zeros(n_fock, dtype=jnp.complex128).at[2].set(1.0)
