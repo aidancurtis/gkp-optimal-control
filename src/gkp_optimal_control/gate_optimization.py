@@ -101,7 +101,20 @@ with the builders' ``disp_method`` argument:
     diagonal exponential rather than an ``expm`` Frechet derivative. Recommended
     for large seed batches or deep circuits.
 
-A third possibility -- building :math:`\langle m|D(\alpha)|n\rangle` from its
+``"fixed"``
+    The ``"quadrature"`` factorization applied to the state without forming
+    :math:`D`. With :math:`W = V_x^\dagger V_p` precomputed,
+
+    .. math::
+        D(\alpha)\psi = e^{-i x_0 p_0}\, V_x\, e^{i\sqrt2 p_0 w_x} \odot
+            \Big(W \big(e^{-i\sqrt2 x_0 w_p} \odot V_p^\dagger \psi\big)\Big),
+
+    three matrix-vector products per state instead of three matrix-matrix
+    products per gate (:func:`make_displacement_apply`). Identical to
+    ``"quadrature"`` up to round-off, smooth in ``Re alpha`` and ``Im alpha``,
+    and gradients flow through diagonal phases only. Recommended.
+
+A fourth possibility -- building :math:`\langle m|D(\alpha)|n\rangle` from its
 closed form -- is deliberately *not* offered. Those are the exact
 infinite-dimensional matrix elements restricted to the truncated block, so the
 resulting matrix is not unitary (numerically ``||D^dag D - I|| ~ 0.5`` at
@@ -169,6 +182,7 @@ __all__ = [
     "csq_sequence",
     "optimize_gate_sequence",
     "make_displacement",
+    "make_displacement_apply",
     "make_squeeze",
     "make_squeeze_apply",
     "sequence_history",
@@ -465,6 +479,44 @@ def make_displacement(n_fock: int, method: str = "expm") -> Callable:
         )
 
     return displace
+
+
+def make_displacement_apply(n_fock: int) -> Callable:
+    r"""Return a jittable ``(psi, alpha, adjoint=False) -> D(alpha) psi``.
+
+    Matrix-free form of the ``"quadrature"`` displacement: identical to
+    ``make_displacement(n_fock, "quadrature")(alpha) @ psi`` up to round-off,
+    but costs three matrix-vector products instead of building ``D``.
+    ``psi`` holds row kets on its last axis, shape ``(..., n_fock)``.
+    ``adjoint=True`` applies ``D(alpha)^dag``, which in the truncated space is
+    *not* ``D(-alpha)`` for this factorization (the two exponentials do not
+    commute once truncated), so ECD uses it for the conjugate branch.
+    """
+    a, adag, _ = cavity_operators(n_fock)
+    root2 = jnp.sqrt(jnp.asarray(2.0, dtype=jnp.real(a).dtype))
+    w_x, v_x = jnp.linalg.eigh((a + adag) / root2)
+    w_p, v_p = jnp.linalg.eigh(1j * (adag - a) / root2)
+    w_xp = v_x.conj().T @ v_p  # p-eigenbasis -> x-eigenbasis
+    # Row-vector forms: x @ M.T == (M x).T
+    vp_dag_t, w_xp_t, vx_t = v_p.conj(), w_xp.T, v_x.T
+    vx_dag_t, w_xp_dag_t, vp_t = v_x.conj(), w_xp.conj(), v_p.T
+
+    def apply(psi, alpha, adjoint: bool = False):
+        alpha = jnp.asarray(alpha, dtype=a.dtype)
+        x_0, p_0 = jnp.real(alpha), jnp.imag(alpha)
+        ph_x = jnp.exp(1j * root2 * p_0 * w_x)
+        ph_p = jnp.exp(-1j * root2 * x_0 * w_p)
+        glob = jnp.exp(-1j * x_0 * p_0)
+        if not adjoint:  # D = glob * V_x ph_x W ph_p V_p^dag
+            y = (psi @ vp_dag_t) * ph_p
+            y = (y @ w_xp_t) * ph_x
+            return glob * (y @ vx_t)
+        # D^dag = conj(glob) * V_p conj(ph_p) W^dag conj(ph_x) V_x^dag
+        y = (psi @ vx_dag_t) * jnp.conj(ph_x)
+        y = (y @ w_xp_dag_t) * jnp.conj(ph_p)
+        return jnp.conj(glob) * (y @ vp_t)
+
+    return apply
 
 
 def make_squeeze(n_fock: int, method: str = "eig"):
@@ -1043,8 +1095,9 @@ def ecd_sequence(
         rotations.
     n_fock : int
         Fock-space truncation.
-    disp_method : {"expm", "quadrature"}
-        How to build ``D(alpha)``; see the module docstring.
+    disp_method : {"expm", "quadrature", "fixed"}
+        How to build / apply ``D(alpha)``; see the module docstring.
+        ``"fixed"`` is ``"quadrature"`` applied without forming the matrix.
     echoed : bool
         ``True`` for the echoed conditional displacement (includes the qubit
         flip), ``False`` for the bare conditional displacement
@@ -1060,11 +1113,27 @@ def ecd_sequence(
     init_disp_scale : float
         Standard deviation of the random initial ``Re beta``, ``Im beta``.
     """
-    displace = make_displacement(n_fock, disp_method)
+    if disp_method == "fixed":
+        disp_apply = make_displacement_apply(n_fock)
 
-    def cond_steps(psi, gp):
-        beta = gp[0] + 1j * gp[1]
-        return [_apply_conditional(psi, displace(beta / 2), echoed)]
+        def cond_steps(psi, gp):
+            # Same action as _apply_conditional(psi, D(beta/2), echoed).
+            half = (gp[0] + 1j * gp[1]) / 2
+            psi_g, psi_e = psi[:, 0, :], psi[:, 1, :]
+            if echoed:
+                out_g = disp_apply(psi_e, half, adjoint=True)
+                out_e = disp_apply(psi_g, half)
+            else:
+                out_g = disp_apply(psi_g, half)
+                out_e = disp_apply(psi_e, half, adjoint=True)
+            return [jnp.stack([out_g, out_e], axis=1)]
+
+    else:
+        displace = make_displacement(n_fock, disp_method)
+
+        def cond_steps(psi, gp):
+            beta = gp[0] + 1j * gp[1]
+            return [_apply_conditional(psi, displace(beta / 2), echoed)]
 
     def init_gate(key):
         return init_disp_scale * jax.random.normal(key, (n_gates, 2))
@@ -1193,8 +1262,9 @@ def snap_sequence(
         Number of SNAP gates; the circuit has ``n_gates + 1`` displacements.
     n_fock : int
         Fock-space truncation.
-    disp_method : {"expm", "quadrature"}
-        How to build ``D(alpha)``; see the module docstring.
+    disp_method : {"expm", "quadrature", "fixed"}
+        How to build / apply ``D(alpha)``; see the module docstring.
+        ``"fixed"`` is ``"quadrature"`` applied without forming the matrix.
     n_snap : int or None
         Number of Fock phases optimized per SNAP gate. ``None`` (default)
         optimizes all ``n_fock`` phases. A smaller value pins the phases of
@@ -1210,7 +1280,10 @@ def snap_sequence(
     if not 1 <= n_snap_eff <= n_fock:
         raise ValueError(f"n_snap must lie in [1, n_fock]; got {n_snap}")
 
-    displace = make_displacement(n_fock, disp_method)
+    if disp_method == "fixed":
+        disp_apply = make_displacement_apply(n_fock)
+    else:
+        displace = make_displacement(n_fock, disp_method)
     n_disp = n_gates + 1
     n_params = n_gates * n_snap_eff + 2 * n_disp
     pad = n_fock - n_snap_eff
@@ -1230,6 +1303,8 @@ def snap_sequence(
         return psi * jnp.exp(1j * phases)[None, :]
 
     def apply_disp(psi, alpha):
+        if disp_method == "fixed":
+            return disp_apply(psi, alpha)
         return psi @ displace(alpha).T
 
     def propagate(flat, psi0, probes=None):
@@ -1757,7 +1832,11 @@ if __name__ == "__main__":
         print(f"{method:>11}: ||D^dag D - I|| = {err:.2e}")
     d_a = make_displacement(n_fock, "expm")(1.0 + 0.5j)
     d_b = make_displacement(n_fock, "quadrature")(1.0 + 0.5j)
-    print(f"expm vs quadrature: {jnp.abs(d_a - d_b).max():.2e}\n")
+    print(f"expm vs quadrature: {jnp.abs(d_a - d_b).max():.2e}")
+    psi_t = jnp.exp(1j * jnp.arange(n_fock)) / jnp.sqrt(n_fock)
+    d_c = make_displacement_apply(n_fock)
+    print(f"fixed vs quadrature: {jnp.abs(d_c(psi_t[None], 1.0 + 0.5j)[0] - d_b @ psi_t).max():.2e}"
+          f"  (adjoint {jnp.abs(d_c(psi_t[None], 1.0 + 0.5j, adjoint=True)[0] - d_b.conj().T @ psi_t).max():.2e})\n")
 
     # Squeezer methods must agree and be unitary.
     for method in ("expm", "eig"):
