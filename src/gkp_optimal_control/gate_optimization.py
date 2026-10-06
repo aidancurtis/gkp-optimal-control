@@ -5,7 +5,9 @@ contrast to :mod:`grape`, which optimizes time-domain control pulses. The
 gates are treated as ideal unitaries; no Kerr, no finite-duration effects, no
 dispersive-shift phase accumulation.
 
-Three gate sets are supported.
+Three gate sets are supported, each built by its own function
+(:func:`ecd_sequence`, :func:`snap_sequence`, :func:`csq_sequence`) and passed
+to :func:`optimize_gate_sequence`.
 
 **ECD + qubit rotations** (Eickbusch et al., *Nat. Phys.* **18**, 1464 (2022))
 
@@ -40,29 +42,29 @@ Fösel, Krastanov et al., arXiv:2004.14256)
 with :math:`N` SNAP gates and :math:`N+1` displacements. This gate set acts on
 the cavity alone.
 
-**Conditional squeezing + qubit rotations** ("second-order ECD"; see the
-notes *GKP State Preparation with Second-Order ECD Sequences*)
+**Conditional squeezing + qubit rotations** (Schiaffino, Lombardo & Paz,
+Eq. 5)
 
 .. math::
-    U = R(\theta_{N+1}, \phi_{N+1}) \prod_{i=N}^{1} C_i\, R(\theta_i, \phi_i),
+    U = R(\theta_{N+1}, \phi_{N+1}) \prod_{i=N}^{1}
+        \mathrm{CSq}(r_i, \varphi_{0,i}, \varphi_{1,i})\, R(\theta_i, \phi_i),
 
-with the same rotation convention as the ECD set. Two layer types:
+with :math:`N` conditional squeezers and :math:`N+1` equatorial qubit
+rotations, i.e. :math:`5N+2` real parameters. Each squeezer applies a
+squeeze of common strength but independent phase in each qubit branch:
 
-``layer="single"`` (notes Secs. III-XI)
-    :math:`C_i = \mathrm{CSQ}(\gamma_i) = \exp[G_i \sigma_z]`,
-    :math:`G = \gamma a^{\dagger 2} - \gamma^* a^2`,
-    :math:`\gamma = \beta e^{i\varphi}`. Parameters per layer:
-    :math:`(\beta_i, \varphi_i)`, so :math:`4N+2` in total.
-``layer="ab"`` (notes Sec. XII)
-    :math:`C_i = \mathrm{CS}_B(t_i)\,\mathrm{CS}_A(r_i)` with
-    :math:`\mathrm{CS}_A(r) = \exp[r\sigma_z A]`,
-    :math:`A = (a^2 - a^{\dagger 2})/2`, and
-    :math:`\mathrm{CS}_B(t) = \exp[t\sigma_z B]`,
-    :math:`B = i(a^2 + a^{\dagger 2})/2`. Parameters per layer:
-    :math:`(r_i, t_i)`, so :math:`4N+2` in total.
+.. math::
+    \mathrm{CSq}(r, \varphi_0, \varphi_1) =
+        |g\rangle\langle g| \otimes S(r, \varphi_0)
+      + |e\rangle\langle e| \otimes S(r, \varphi_1), \qquad
+    S(r, \varphi) = \exp\!\left[\tfrac{r}{2}\left(a^2 e^{-i\varphi}
+        - a^{\dagger 2} e^{i\varphi}\right)\right].
 
-With ``echoed=True`` each conditional squeeze carries a qubit flip, mirroring
-the ECD convention: :math:`e^{G}|e\rangle\langle g| + e^{-G}|g\rangle\langle e|`.
+The squeezing axis in branch :math:`j` is :math:`\varphi_j/2`, and the
+qubit ground state plays the role of the paper's :math:`|0\rangle`; the
+paper's encoding gate is :math:`\varphi_0 = 0,\ \varphi_1 = \pi`. The gate is
+diagonal in the qubit basis (no echo / qubit flip), and the state is carried
+in the same ``(psi_g, psi_e)`` block representation as the ECD set.
 
 Every element of this gate set commutes with cavity photon-number parity
 (:math:`\Delta n = \pm 2` only, and the rotations act on the qubit alone), so
@@ -84,7 +86,8 @@ Run with 64-bit precision enabled::
     import jax
     jax.config.update("jax_enable_x64", True)
 
-Displacements are built by one of two methods, selected with ``disp_method``:
+Displacements (ECD and SNAP sets) are built by one of two methods, selected
+with the builders' ``disp_method`` argument:
 
 ``"expm"`` (default)
     :math:`D(\alpha) = \exp(\alpha a^\dagger - \alpha^* a)` of the truncated
@@ -105,17 +108,14 @@ resulting matrix is not unitary (numerically ``||D^dag D - I|| ~ 0.5`` at
 ``n_fock = 40``); norm is not conserved and an optimizer will happily exploit
 that to report fidelities it has not achieved.
 
-Squeezers :math:`e^{G(\beta,\varphi)}` are built by one of two methods,
-selected with ``sq_method``:
+Squeezers :math:`S(r, \varphi)` (CSQ set) are built by :func:`make_squeeze`,
+with the method selected by :func:`csq_sequence`'s ``sq_method`` argument:
 
 ``"eig"`` (default)
-    The phase is moved into number-operator rotations,
-    :math:`e^{G(\beta,\varphi)} = e^{i\varphi\hat n/2}\, e^{\beta K}\,
-    e^{-i\varphi\hat n/2}` with :math:`K = a^{\dagger 2} - a^2`. A single
-    eigendecomposition of :math:`iK` is computed once, so every gate costs two
-    diagonal phase layers and one dense product. The identity holds *exactly*
-    for the truncated matrices (the conjugation is diagonal), so the result is
-    exactly unitary and identical to ``"expm"`` up to round-off.
+    Eigendecomposition of the Hermitian matrix :math:`iG(r,\varphi)`, where
+    :math:`G` is the truncated anti-Hermitian generator, followed by
+    :math:`e^{G} = V e^{-i\Lambda} V^\dagger`. Exactly unitary in the
+    truncated space and identical to ``"expm"`` up to round-off.
 ``"expm"``
     Direct matrix exponential of the truncated generator.
 """
@@ -134,10 +134,7 @@ from jax import lax, value_and_grad, vmap
 from jax.scipy.linalg import expm
 from scipy.optimize import minimize
 
-try:  # package-relative import, with a flat-layout fallback
-    from .hamiltonians import cavity_operators
-except ImportError:  # pragma: no cover
-    from hamiltonians import cavity_operators
+from .hamiltonians import cavity_operators
 
 try:
     import jaxquantum as jqt
@@ -151,13 +148,14 @@ __all__ = [
     "TrajectoryPenalty",
     "GateOptResult",
     "GateSequence",
+    "ecd_sequence",
+    "snap_sequence",
+    "csq_sequence",
     "optimize_gate_sequence",
-    "build_sequence",
     "make_displacement",
     "make_squeeze",
     "sequence_history",
     "to_joint_ket",
-    "GATE_SETS",
 ]
 
 
@@ -182,26 +180,22 @@ class GateBounds:
     max_disp_weight : float
         Weight of the displacement-cap penalty.
     max_squeeze : float or None
-        Soft cap on the conditional-squeezing strength ``|gamma|`` of every
-        squeezer in the CSQ set: ``|beta_i|`` for ``layer="single"``, and
-        ``|r_i|/2``, ``|t_i|/2`` for ``layer="ab"``. Used instead of
-        ``max_disp`` for that gate set.
+        Soft cap on the squeeze strength ``|r_i|`` of every conditional
+        squeezer in the CSQ set. Used instead of ``max_disp`` for that gate set.
     max_squeeze_weight : float
         Weight of the squeezing-cap penalty.
-    n_leak : int
-        Number of top Fock levels treated as leakage. Population there is
-        penalized after every displacement or squeeze in the circuit, not only
-        at the end, since intermediate gates are what push a state into the
-        truncation boundary.
     leakage_weight : float
-        Weight of the leakage penalty. Set to 0 to disable.
+        Weight of the Fock-leakage penalty. Population in the top ``n_leak``
+        Fock levels (set on the sequence builder) is penalized after every
+        displacement or squeeze in the circuit, not only at the end, since
+        intermediate gates are what push a state into the truncation boundary.
+        Set to 0 to disable.
     """
 
     max_disp: float | None = None
     max_disp_weight: float = 1.0
     max_squeeze: float | None = None
     max_squeeze_weight: float = 1.0
-    n_leak: int = 5
     leakage_weight: float = 1.0
 
 
@@ -220,12 +214,10 @@ class OptimizerConfig:
         then cosine-decayed to ``final_lr_frac * peak_lr``.
     polish : bool
         Whether to refine the best Adam seed with L-BFGS-B.
+    polish_maxiter : int
+        Maximum L-BFGS-B iterations.
     seed : int
         PRNG seed for the initializations.
-    init_disp_scale : float
-        Scale of the random initial displacements (``|beta|`` or ``|alpha|``).
-    init_squeeze_scale : float
-        Typical initial ``|gamma|`` of each conditional squeeze (CSQ set).
     """
 
     n_seeds: int = 8
@@ -236,8 +228,6 @@ class OptimizerConfig:
     polish: bool = True
     polish_maxiter: int = 500
     seed: int = 0
-    init_disp_scale: float = 1.0
-    init_squeeze_scale: float = 0.2
 
 
 @dataclass(frozen=True)
@@ -323,14 +313,20 @@ class TrajectoryPenalty:
 
     @property
     def active(self) -> bool:
-        return any(w != 0.0 for w in (self.mono_weight, self.curve_weight,
-                                      self.control_weight, self.rot_weight,
-                                      self.geodesic_weight))
+        return any(
+            w != 0.0
+            for w in (
+                self.mono_weight,
+                self.curve_weight,
+                self.control_weight,
+                self.rot_weight,
+                self.geodesic_weight,
+            )
+        )
 
     @property
     def needs_path(self) -> bool:
-        return (self.mono_weight != 0.0 or self.curve_weight != 0.0
-                or self.geodesic_weight != 0.0)
+        return self.mono_weight != 0.0 or self.curve_weight != 0.0 or self.geodesic_weight != 0.0
 
 
 @dataclass
@@ -349,6 +345,7 @@ class GateOptResult:
     per_seed_fidelity: np.ndarray
     best_seed: int
     adam_history: np.ndarray
+    sequence: GateSequence = field(repr=False)
     polish_info: dict = field(default_factory=dict)
     config: dict = field(default_factory=dict)
     trajectory: np.ndarray | None = None
@@ -453,54 +450,32 @@ def make_displacement(n_fock: int, method: str = "expm") -> Callable:
     return displace
 
 
-def make_squeeze(n_fock: int, method: str = "eig") -> Callable:
-    r"""Return a jittable ``(beta, phi) -> exp(G)`` closure.
+def make_squeeze(n_fock: int, method: str = "eig"):
+    """Return a jittable ``(r, phi) -> S(r, phi)`` closure.
 
-    ``G = beta * (exp(i phi) a^dag^2 - exp(-i phi) a^2)``, i.e.
-    ``gamma = beta * exp(i phi)`` in the notes' convention. ``beta`` and
-    ``phi`` are real; a negative ``beta`` is equivalent to ``phi + pi``.
-
-    Parameters
-    ----------
-    n_fock : int
-        Fock-space truncation.
-    method : {"eig", "expm"}
-        See the module docstring. Both are exactly unitary on the truncated
-        space and agree to round-off; ``"eig"`` avoids a per-gate ``expm`` and
-        its Frechet derivative.
+    ``S(r, phi) = exp[(r/2)(a^2 e^{-i phi} - a^dag^2 e^{i phi})]`` (Schiaffino,
+    Lombardo & Paz, Eq. 5). ``method`` is ``"eig"`` or ``"expm"``; see the
+    module docstring.
     """
-    a, adag, _ = cavity_operators(n_fock)
+    cdtype = jnp.asarray(0j).dtype
+    rdtype = jnp.asarray(0.0).dtype
+    a = jnp.diag(jnp.sqrt(jnp.arange(1, n_fock, dtype=rdtype)), k=1).astype(cdtype)
     a2 = a @ a
-    adag2 = adag @ adag
-    real_dtype = jnp.real(a).dtype
+    a2d = a2.conj().T
+
+    def generator(r, phi):  # anti-Hermitian
+        return 0.5 * r * (a2 * jnp.exp(-1j * phi) - a2d * jnp.exp(1j * phi))
 
     if method == "expm":
+        return lambda r, phi: jax.scipy.linalg.expm(generator(r, phi))
+    if method == "eig":
 
-        def squeeze(beta, phi):
-            beta = jnp.asarray(beta, dtype=real_dtype)
-            phi = jnp.asarray(phi, dtype=real_dtype)
-            gen = beta * (jnp.exp(1j * phi) * adag2 - jnp.exp(-1j * phi) * a2)
-            return expm(gen)
+        def squeeze(r, phi):
+            lam, v = jnp.linalg.eigh(1j * generator(r, phi))  # iG is Hermitian
+            return (v * jnp.exp(-1j * lam)) @ v.conj().T  # exp(G) = exp(-i H)
 
-    elif method == "eig":
-        # K = a^dag^2 - a^2 is anti-Hermitian, so iK = V diag(w) V^dag with w real,
-        # and exp(beta K) = V diag(exp(-i beta w)) V^dag.
-        w, v = jnp.linalg.eigh(1j * (adag2 - a2))
-        v_dag = v.conj().T
-        n_diag = jnp.arange(n_fock, dtype=real_dtype)
-
-        def squeeze(beta, phi):
-            beta = jnp.asarray(beta, dtype=real_dtype)
-            phi = jnp.asarray(phi, dtype=real_dtype)
-            core = v @ (jnp.exp(-1j * beta * w)[:, None] * v_dag)
-            # exp(i phi n/2) a^dag^2 exp(-i phi n/2) = exp(i phi) a^dag^2
-            rot = jnp.exp(0.5j * phi * n_diag)
-            return rot[:, None] * core * jnp.conj(rot)[None, :]
-
-    else:
-        raise ValueError(f"unknown sq_method {method!r}; expected 'eig' or 'expm'.")
-
-    return squeeze
+        return squeeze
+    raise ValueError(f"unknown sq_method {method!r}; expected 'eig' or 'expm'.")
 
 
 def qubit_rotation(theta, phi):
@@ -661,6 +636,7 @@ def _geodesic_overlap(amps, theta, mode: str):
     c = jnp.real(jnp.sum(amp_i * jnp.conj(amp_p), axis=-1))
     big_a, big_b = 0.5 * (p_i + p_p), 0.5 * (p_i - p_p)
     n_layers = amps.shape[0]
+
     def f_at(a):
         return big_a + big_b * jnp.cos(2 * a) + c * jnp.sin(2 * a)
 
@@ -777,6 +753,11 @@ class GateSequence:
         Whether the state carries a qubit block (ECD, CSQ).
     strength_kind : {"disp", "squeeze"}
         Which :class:`GateBounds` cap applies to the reported gate strengths.
+    qubit_target : {"ground", "traced"} or None
+        How the qubit is scored at the end (see :func:`ecd_sequence`); ``None``
+        for SNAP, which has no qubit.
+    n_leak : int
+        Number of top Fock levels counted as leakage.
     unpack : callable
         ``flat -> pytree`` of gate parameters.
     lift : callable
@@ -810,6 +791,8 @@ class GateSequence:
     n_params: int
     has_qubit: bool
     strength_kind: str
+    qubit_target: str | None
+    n_leak: int
     unpack: Callable
     lift: Callable
     propagate: Callable
@@ -912,6 +895,7 @@ def _build_qubit_block_sequence(
 
         (psi, leak), amps = lax.scan(step, (psi, leak0), (gps, rots[1:]))
         if track:
+            assert amps is not None
             amps = jnp.concatenate([_probe_amplitudes(psi0, probes)[None], amps])
         return psi, leak, strengths(gps), amps
 
@@ -973,6 +957,8 @@ def _build_qubit_block_sequence(
         n_params=n_params,
         has_qubit=True,
         strength_kind=strength_kind,
+        qubit_target=qubit_target,
+        n_leak=n_leak,
         unpack=unpack,
         lift=lift,
         propagate=propagate,
@@ -986,7 +972,7 @@ def _build_qubit_block_sequence(
     )
 
 
-def _build_ecd_sequence(
+def ecd_sequence(
     n_gates: int,
     n_fock: int,
     *,
@@ -995,12 +981,18 @@ def _build_ecd_sequence(
     qubit_target: str = "ground",
     n_leak: int = 5,
     init_disp_scale: float = 1.0,
-    **_ignored,
 ) -> GateSequence:
     r"""ECD + equatorial rotations, propagated in the 2x2 qubit block basis.
 
     Parameters
     ----------
+    n_gates : int
+        Number of conditional displacements; the circuit has ``n_gates + 1``
+        rotations.
+    n_fock : int
+        Fock-space truncation.
+    disp_method : {"expm", "quadrature"}
+        How to build ``D(alpha)``; see the module docstring.
     echoed : bool
         ``True`` for the echoed conditional displacement (includes the qubit
         flip), ``False`` for the bare conditional displacement
@@ -1010,6 +1002,11 @@ def _build_ecd_sequence(
         qubit to ``|g>`` and disentangling it -- the standard choice.
         ``"traced"`` scores ``<psi_t| rho_cav |psi_t>``, allowing the qubit to
         end anywhere, which is only meaningful if you intend to discard it.
+    n_leak : int
+        Number of top Fock levels counted as leakage (weighted by
+        ``GateBounds.leakage_weight``).
+    init_disp_scale : float
+        Standard deviation of the random initial ``Re beta``, ``Im beta``.
     """
     displace = make_displacement(n_fock, disp_method)
 
@@ -1036,94 +1033,75 @@ def _build_ecd_sequence(
     )
 
 
-def _build_csq_sequence(
+def csq_sequence(
     n_gates: int,
     n_fock: int,
     *,
-    layer: str = "single",
     sq_method: str = "eig",
-    echoed: bool = False,
     qubit_target: str = "ground",
     n_leak: int = 5,
     init_squeeze_scale: float = 0.2,
-    **_ignored,
 ) -> GateSequence:
-    r"""Conditional squeezing ("second-order ECD") + equatorial rotations.
+    r"""Conditional squeezing gate of Schiaffino, Lombardo & Paz (Eq. 5).
+
+    Each layer is ``CSq(r, phi0, phi1) = |g><g| (x) S(r, phi0) + |e><e| (x) S(r, phi1)``
+    with ``S(r, phi) = exp[(r/2)(a^2 e^{-i phi} - a^dag^2 e^{i phi})]``, parameters
+    ``(r, phi0, phi1)``. The squeezing axis in branch j is phi_j / 2. The qubit
+    ground state plays the role of the paper's |0>. The encoding gate of the paper
+    is ``phi0 = 0, phi1 = pi``.
 
     Parameters
     ----------
-    layer : {"single", "ab"}
-        ``"single"``: one ``exp[G(beta, varphi) sigma_z]`` per layer, with
-        parameters ``(beta_i, varphi_i)``. ``"ab"``: ``CS_B(t_i) CS_A(r_i)``
-        with the fixed generators ``A = (a^2 - a^dag^2)/2`` and
-        ``B = i(a^2 + a^dag^2)/2``, with parameters ``(r_i, t_i)``.
+    n_gates : int
+        Number of conditional squeezers; the circuit has ``n_gates + 1``
+        rotations.
+    n_fock : int
+        Fock-space truncation.
     sq_method : {"eig", "expm"}
-        Squeezer construction; see :func:`make_squeeze`.
-    echoed : bool
-        Add a qubit flip to every conditional squeeze, mirroring ECD:
-        ``e^{G}|e><g| + e^{-G}|g><e|``. Default ``False`` (the notes' bare
-        ``exp[G sigma_z]``).
+        How to build ``S(r, phi)``; see :func:`make_squeeze`.
     qubit_target : {"ground", "traced"}
-        As for the ECD set. The notes use ``"ground"`` in Secs. III-XI and
-        ``"traced"`` in Sec. XII.
+        As in :func:`ecd_sequence`.
+    n_leak : int
+        Number of top Fock levels counted as leakage (weighted by
+        ``GateBounds.leakage_weight``).
     init_squeeze_scale : float
-        Typical initial ``|gamma|`` per squeezer.
+        Standard deviation of the random initial ``r``. Phases are drawn
+        uniformly on ``[-pi, pi)``.
     """
     squeeze = make_squeeze(n_fock, sq_method)
-    half_pi = jnp.pi / 2
 
-    if layer == "single":
+    def cond_steps(psi, gp):
+        r, phi0, phi1 = gp[0], gp[1], gp[2]
+        out_g = psi[:, 0, :] @ squeeze(r, phi0).T
+        out_e = psi[:, 1, :] @ squeeze(r, phi1).T
+        return [jnp.stack([out_g, out_e], axis=1)]
 
-        def cond_steps(psi, gp):
-            return [_apply_conditional(psi, squeeze(gp[0], gp[1]), echoed)]
+    def strengths(gps):
+        return jnp.abs(gps[:, 0])
 
-        def strengths(gps):
-            return jnp.abs(gps[:, 0])
+    def gate_controls(gps):
+        return [(gps[:, 0:1], False), (gps[:, 1:3], True)]
 
-        def gate_controls(gps):
-            return [(gps[:, 0:1], False), (gps[:, 1:2], True)]
+    def init_gate(key):
+        k_r, k_p = jax.random.split(key)
+        r = init_squeeze_scale * jax.random.normal(k_r, (n_gates, 1))
+        phases = jax.random.uniform(k_p, (n_gates, 2), minval=-jnp.pi, maxval=jnp.pi)
+        return jnp.concatenate([r, phases], axis=-1)
 
-        def init_gate(key):
-            k_b, k_p = jax.random.split(key)
-            betas = init_squeeze_scale * jax.random.normal(k_b, (n_gates,))
-            phases = jax.random.uniform(k_p, (n_gates,), minval=-jnp.pi, maxval=jnp.pi)
-            return jnp.stack([betas, phases], axis=-1)
-
-        def describe_gate(gps):
-            return {
-                "sq_betas": gps[:, 0],
-                "sq_phases": gps[:, 1],
-                "gammas": gps[:, 0] * np.exp(1j * gps[:, 1]),
-            }
-
-    elif layer == "ab":
-        # exp(rA) = squeeze(r/2, pi);  exp(tB) = squeeze(t/2, pi/2)
-
-        def cond_steps(psi, gp):
-            psi_a = _apply_conditional(psi, squeeze(gp[0] / 2, jnp.pi), echoed)
-            psi_b = _apply_conditional(psi_a, squeeze(gp[1] / 2, half_pi), echoed)
-            return [psi_a, psi_b]
-
-        def strengths(gps):
-            return 0.5 * jnp.abs(gps).ravel()
-
-        def gate_controls(gps):
-            return [(gps, False)]
-
-        def init_gate(key):
-            return 2.0 * init_squeeze_scale * jax.random.normal(key, (n_gates, 2))
-
-        def describe_gate(gps):
-            return {"r": gps[:, 0], "t": gps[:, 1]}
-
-    else:
-        raise ValueError(f"unknown layer {layer!r}; expected 'single' or 'ab'.")
+    def describe_gate(gps):
+        return {
+            "r": gps[:, 0],
+            "phi0": gps[:, 1],
+            "phi1": gps[:, 2],
+            "axis0": gps[:, 1] / 2,
+            "axis1": gps[:, 2] / 2,
+        }
 
     return _build_qubit_block_sequence(
         name="csq",
         n_gates=n_gates,
         n_fock=n_fock,
-        n_gate_params=2,
+        n_gate_params=3,
         cond_steps=cond_steps,
         strengths=strengths,
         strength_kind="squeeze",
@@ -1135,7 +1113,7 @@ def _build_csq_sequence(
     )
 
 
-def _build_snap_sequence(
+def snap_sequence(
     n_gates: int,
     n_fock: int,
     *,
@@ -1143,17 +1121,27 @@ def _build_snap_sequence(
     n_snap: int | None = None,
     n_leak: int = 5,
     init_disp_scale: float = 1.0,
-    **_ignored,
 ) -> GateSequence:
     r"""SNAP + displacements, sandwiched as ``D S D S ... D``.
 
     Parameters
     ----------
+    n_gates : int
+        Number of SNAP gates; the circuit has ``n_gates + 1`` displacements.
+    n_fock : int
+        Fock-space truncation.
+    disp_method : {"expm", "quadrature"}
+        How to build ``D(alpha)``; see the module docstring.
     n_snap : int or None
         Number of Fock phases optimized per SNAP gate. ``None`` (default)
         optimizes all ``n_fock`` phases. A smaller value pins the phases of
         levels ``n >= n_snap`` to zero, which is the physically honest choice
         when the selective qubit pulses only resolve low photon numbers.
+    n_leak : int
+        Number of top Fock levels counted as leakage (weighted by
+        ``GateBounds.leakage_weight``).
+    init_disp_scale : float
+        Standard deviation of the random initial ``Re alpha``, ``Im alpha``.
     """
     n_snap_eff = int(n_fock if n_snap is None else n_snap)
     if not 1 <= n_snap_eff <= n_fock:
@@ -1199,10 +1187,10 @@ def _build_snap_sequence(
         psi_d0 = psi
         (psi, leak), amps = lax.scan(step, (psi, leak), (thetas, alphas[1:]))
         if track:
-            head = jnp.stack(
-                [_probe_amplitudes(psi0, probes), _probe_amplitudes(psi_d0, probes)]
-            )
+            assert amps is not None
+            head = jnp.stack([_probe_amplitudes(psi0, probes), _probe_amplitudes(psi_d0, probes)])
             amps = jnp.concatenate([head, amps])
+
         disp_mags = jnp.linalg.norm(alphas, axis=-1)
         return psi, leak, disp_mags, amps
 
@@ -1245,6 +1233,7 @@ def _build_snap_sequence(
         return [(thetas, True), (alphas, False)]
 
     def rotation_angles(flat):
+        _ = unpack(flat)
         return jnp.zeros((0,))
 
     return GateSequence(
@@ -1254,6 +1243,8 @@ def _build_snap_sequence(
         n_params=n_params,
         has_qubit=False,
         strength_kind="disp",
+        qubit_target=None,
+        n_leak=n_leak,
         unpack=unpack,
         lift=lift,
         propagate=propagate,
@@ -1265,41 +1256,6 @@ def _build_snap_sequence(
         controls=controls,
         rotation_angles=rotation_angles,
     )
-
-
-GATE_SETS: dict[str, Callable[..., GateSequence]] = {
-    "ecd": _build_ecd_sequence,
-    "snap": _build_snap_sequence,
-    "csq": _build_csq_sequence,
-}
-
-_GATE_SET_ALIASES = {
-    "ecd": "ecd",
-    "ecd+rotations": "ecd",
-    "ecd_rotations": "ecd",
-    "ecd+qubit_rotations": "ecd",
-    "snap": "snap",
-    "snap+displacements": "snap",
-    "snap_displacements": "snap",
-    "snap+disp": "snap",
-    "csq": "csq",
-    "csg": "csq",
-    "conditional_squeezing": "csq",
-    "csq+rotations": "csq",
-    "second_order_ecd": "csq",
-}
-
-
-def build_sequence(gate_set: str, n_gates: int, n_fock: int, **kwargs) -> GateSequence:
-    """Construct a :class:`GateSequence` for a named gate set."""
-    key = _GATE_SET_ALIASES.get(str(gate_set).strip().lower())
-    if key is None:
-        raise ValueError(
-            f"unknown gate_set {gate_set!r}; expected one of {sorted(_GATE_SET_ALIASES)}"
-        )
-    if n_gates < 1:
-        raise ValueError(f"n_gates must be >= 1; got {n_gates}")
-    return GATE_SETS[key](n_gates, n_fock, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -1340,31 +1296,15 @@ def _adam_run(loss_and_grad, params0, n_iters, lr_at, b1=0.9, b2=0.999, eps=1e-8
     return params, history
 
 
-# ---------------------------------------------------------------------------
-# Main entry point
-# ---------------------------------------------------------------------------
-
-
 def optimize_gate_sequence(
-    gate_set: str,
-    n_gates: int,
+    seq: GateSequence,
     psi_init,
     psi_targ,
-    n_fock: int | None = None,
     *,
-    # --- ansatz options -------------------------------------------------
-    n_snap: int | None = None,
-    echoed: bool | None = None,
-    qubit_target: str = "ground",
-    disp_method: str = "expm",
-    layer: str = "single",
-    sq_method: str = "eig",
-    # --- objective ------------------------------------------------------
     loss_type: str = "infidelity",
     batch_reduction: str = "mean",
     bounds: GateBounds | None = None,
     trajectory: TrajectoryPenalty | None = None,
-    # --- optimizer ------------------------------------------------------
     optimizer: OptimizerConfig | None = None,
     params0: np.ndarray | None = None,
     verbose: bool = True,
@@ -1373,41 +1313,20 @@ def optimize_gate_sequence(
 
     Parameters
     ----------
-    gate_set : {"ecd", "snap", "csq"}
-        ``"ecd"`` for echoed conditional displacements interleaved with
-        equatorial qubit rotations; ``"snap"`` for SNAP gates sandwiched between
-        displacements; ``"csq"`` for conditional squeezing interleaved with
-        equatorial qubit rotations. Aliases such as ``"ecd+rotations"``,
-        ``"snap+displacements"``, ``"conditional_squeezing"`` and ``"csg"`` are
-        accepted; unknown names raise.
-    n_gates : int
-        Circuit depth, counted in ECDs, SNAPs, or conditional-squeezing layers.
-        The ECD and CSQ ansaetze carry ``n_gates + 1`` rotations, and the SNAP
-        ansatz carries ``n_gates + 1`` displacements.
+    seq : GateSequence
+        The circuit ansatz, built with :func:`ecd_sequence`,
+        :func:`snap_sequence` or :func:`csq_sequence`. Depth, truncation and
+        every ansatz-specific option (echo, SNAP phase count, qubit target,
+        displacement / squeeze construction, leakage levels, initialization
+        scale) are fixed there.
     psi_init, psi_targ : Qarray or array_like
         Cavity kets, shape ``(n_fock,)``, ``(n_fock, 1)``, ``(K, n_fock)`` or a
-        list thereof. With ``K > 1`` one parameter set is optimized for all
-        pairs simultaneously, which is how you target a *gate* on a logical
-        subspace rather than a single state. For the qubit gate sets these are
-        cavity states only: the qubit is assumed to start in ``|g>`` and (with
-        ``qubit_target="ground"``) is required to return there. Targets are
-        renormalized.
-    n_fock : int, optional
-        Truncation. Inferred from the states if omitted.
-    n_snap : int, optional
-        Fock phases optimized per SNAP gate; default all ``n_fock``.
-    echoed : bool, optional
-        Include the qubit flip in each conditional gate. Defaults to ``True``
-        for ECD and ``False`` for CSQ (the notes' bare ``exp[G sigma_z]``).
-    qubit_target : {"ground", "traced"}
-        Whether the qubit must return to ``|g>`` or may be discarded.
-    disp_method : {"expm", "quadrature"}
-        How to build ``D(alpha)``. ``"quadrature"`` is ~4x faster at equal
-        accuracy and is recommended for large seed batches.
-    layer : {"single", "ab"}
-        CSQ layer type; see :func:`_build_csq_sequence`.
-    sq_method : {"eig", "expm"}
-        How to build CSQ squeezers; see :func:`make_squeeze`.
+        list thereof, with ``n_fock == seq.n_fock``. With ``K > 1`` one
+        parameter set is optimized for all pairs simultaneously, which is how
+        you target a *gate* on a logical subspace rather than a single state.
+        For the qubit gate sets these are cavity states only: the qubit is
+        assumed to start in ``|g>`` and (with ``qubit_target="ground"``) is
+        required to return there. Targets are renormalized.
     loss_type : {"infidelity", "log_infidelity", "neg_fidelity"}
         ``"log_infidelity"`` is usually the better choice once you are pushing
         past ``F = 0.99``, where ``1 - F`` is nearly flat.
@@ -1416,8 +1335,9 @@ def optimize_gate_sequence(
         fidelities. ``"coherent"`` averages the *overlaps* before squaring,
         which is the right objective for a gate on a subspace (it fixes the
         relative phases between logical basis states, up to one global phase).
+        Requires ``qubit_target="ground"`` for the qubit gate sets.
     bounds : GateBounds, optional
-        Soft displacement / squeezing caps and Fock-leakage penalty.
+        Soft displacement / squeezing caps and the leakage-penalty weight.
     trajectory : TrajectoryPenalty, optional
         Opt-in penalties on the fidelity path and control roughness. These are
         added to the loss in both the Adam and L-BFGS-B stages. Seeds are
@@ -1436,8 +1356,8 @@ def optimize_gate_sequence(
     GateOptResult
         Optimized parameters (both flat and in a labelled dict), achieved
         fidelity, final states, per-seed fidelities, the Adam loss history,
-        the reduced-cavity fidelity trajectory, penalty breakdown and (for
-        qubit gate sets) the final qubit purity.
+        the reduced-cavity fidelity trajectory, penalty breakdown, (for qubit
+        gate sets) the final qubit purity, and the ``GateSequence`` itself.
 
     Examples
     --------
@@ -1447,16 +1367,17 @@ def optimize_gate_sequence(
     >>> ell = jnp.sqrt(jnp.pi / 2)
     >>> gkp_0, _ = gkp_states(80, ell, 1j * ell, 0.4, 5)
     >>> res = optimize_gate_sequence(
-    ...     "ecd", 12, jqt.basis(80, 0), gkp_0,
+    ...     ecd_sequence(12, 80, n_leak=8),
+    ...     jqt.basis(80, 0), gkp_0,
     ...     loss_type="log_infidelity",
-    ...     bounds=GateBounds(max_disp=4.0, n_leak=8),
+    ...     bounds=GateBounds(max_disp=4.0),
     ...     optimizer=OptimizerConfig(n_seeds=16, n_adam_iters=2000),
     ... )
     >>> res_csq = optimize_gate_sequence(
-    ...     "csq", 32, jqt.basis(80, 0), gkp_0,
-    ...     layer="ab", qubit_target="traced",
+    ...     csq_sequence(32, 80, qubit_target="traced", n_leak=8),
+    ...     jqt.basis(80, 0), gkp_0,
     ...     loss_type="log_infidelity",
-    ...     bounds=GateBounds(max_squeeze=0.6, n_leak=8),
+    ...     bounds=GateBounds(max_squeeze=0.6),
     ...     trajectory=TrajectoryPenalty.notes_defaults(),
     ... )
     >>> print(res_csq.summary())
@@ -1474,9 +1395,8 @@ def optimize_gate_sequence(
     optimizer = optimizer or OptimizerConfig()
     trajectory = trajectory or TrajectoryPenalty()
 
-    psi_i = _as_ket_batch(psi_init, n_fock, "psi_init")
-    n_fock = int(psi_i.shape[-1]) if n_fock is None else int(n_fock)
-    psi_t = _as_ket_batch(psi_targ, n_fock, "psi_targ")
+    psi_i = _as_ket_batch(psi_init, seq.n_fock, "psi_init")
+    psi_t = _as_ket_batch(psi_targ, seq.n_fock, "psi_targ")
     if psi_i.shape[0] != psi_t.shape[0]:
         raise ValueError(
             f"psi_init has {psi_i.shape[0]} state(s) but psi_targ has "
@@ -1484,25 +1404,8 @@ def optimize_gate_sequence(
         )
     n_pairs = int(psi_i.shape[0])
 
-    gate_key = _GATE_SET_ALIASES.get(str(gate_set).strip().lower())
-    if echoed is None:
-        echoed = gate_key != "csq"
-
-    seq = build_sequence(
-        gate_set,
-        n_gates,
-        n_fock,
-        disp_method=disp_method,
-        echoed=echoed,
-        qubit_target=qubit_target,
-        n_snap=n_snap,
-        layer=layer,
-        sq_method=sq_method,
-        n_leak=bounds.n_leak,
-        init_disp_scale=optimizer.init_disp_scale,
-        init_squeeze_scale=optimizer.init_squeeze_scale,
-    )
-    if batch_reduction == "coherent" and seq.has_qubit and qubit_target != "ground":
+    overlaps_defined = (not seq.has_qubit) or seq.qubit_target == "ground"
+    if batch_reduction == "coherent" and not overlaps_defined:
         raise ValueError(
             "batch_reduction='coherent' requires qubit_target='ground' "
             "(a traced-out qubit has no well-defined overlap phase)."
@@ -1521,7 +1424,7 @@ def optimize_gate_sequence(
             )
 
     if seq.strength_kind == "squeeze":
-        cap, cap_weight, cap_label = bounds.max_squeeze, bounds.max_squeeze_weight, "|gamma|"
+        cap, cap_weight, cap_label = bounds.max_squeeze, bounds.max_squeeze_weight, "|r|"
     else:
         cap, cap_weight, cap_label = bounds.max_disp, bounds.max_disp_weight, "|disp|"
 
@@ -1544,13 +1447,14 @@ def optimize_gate_sequence(
         loss = loss + _disp_penalty(mags, cap, cap_weight)
         if trajectory.active:
             terms = _trajectory_terms(
-                amps, seq.controls(flat), seq.rotation_angles(flat),
-                geo_arg, trajectory.geodesic_mode,
+                amps,
+                seq.controls(flat),
+                seq.rotation_angles(flat),
+                geo_arg,
+                trajectory.geodesic_mode,
             )
             loss = loss + _weighted_trajectory_penalty(terms, trajectory)
         return loss
-
-    overlaps_defined = (not seq.has_qubit) or qubit_target == "ground"
 
     def diagnose(flat):
         flat = jnp.asarray(flat)
@@ -1560,8 +1464,11 @@ def optimize_gate_sequence(
         if overlaps_defined:
             per_pair = np.asarray(jnp.abs(seq.overlaps(psi_f, psi_t)) ** 2)
         terms = _trajectory_terms(
-            amps, seq.controls(flat), seq.rotation_angles(flat),
-            geo_theta, trajectory.geodesic_mode,
+            amps,
+            seq.controls(flat),
+            seq.rotation_angles(flat),
+            geo_theta,
+            trajectory.geodesic_mode,
         )
         purity = float(_qubit_purity(psi_f)) if seq.has_qubit else None
         f_tube, a_tube = _geodesic_overlap(amps, geo_theta, "tube")
@@ -1573,9 +1480,15 @@ def optimize_gate_sequence(
             ),
         }
         return (
-            psi_f, float(fid), float(leak), np.asarray(mags), per_pair,
-            np.asarray(_path_fidelity(amps)), {k: float(v) for k, v in terms.items()},
-            purity, geo,
+            psi_f,
+            float(fid),
+            float(leak),
+            np.asarray(mags),
+            per_pair,
+            np.asarray(_path_fidelity(amps)),
+            {k: float(v) for k, v in terms.items()},
+            purity,
+            geo,
         )
 
     loss_and_grad = jax.jit(value_and_grad(loss_fn))
@@ -1600,16 +1513,11 @@ def optimize_gate_sequence(
     n_seeds = int(init_params.shape[0])
 
     if verbose:
-        extra = ""
-        if seq.name == "snap" and n_snap:
-            extra = f"   n_snap : {n_snap}"
-        elif seq.name == "csq":
-            extra = f"   layer : {layer}   sq : {sq_method}   echoed : {echoed}"
-        print(f"gate set : {seq.name}   depth : {n_gates}   n_fock : {n_fock}")
+        print(f"gate set : {seq.name}   depth : {seq.n_gates}   n_fock : {seq.n_fock}")
         print(
             f"params   : {seq.n_params}   state pairs : {n_pairs}   reduction : {batch_reduction}"
         )
-        print(f"loss     : {loss_type}   disp : {disp_method}   seeds : {n_seeds}" + extra)
+        print(f"loss     : {loss_type}   seeds : {n_seeds}")
         if trajectory.active:
             print(
                 f"traj     : mono {trajectory.mono_weight}  curve {trajectory.curve_weight}"
@@ -1707,19 +1615,21 @@ def optimize_gate_sequence(
     if verbose:
         print("-" * 62)
         print(f"Final fidelity : {fid:.6f}   (infidelity {1 - fid:.3e})")
-        print(f"Leakage        : {leak:.3e}  (top {bounds.n_leak} Fock levels)")
+        print(f"Leakage        : {leak:.3e}  (top {seq.n_leak} Fock levels)")
         print(f"Peak {cap_label:<10}: {mags.max():.3f}")
         if purity is not None:
             print(f"Qubit purity   : {purity:.6f}")
         drops = np.maximum(fid_path[:-1] - fid_path[1:], 0.0)
         print(f"Max F drop     : {drops.max():.3e}  (reduced-cavity path)")
-        print(f"Geodesic dev.  : max {geo['deviation'].max():.3e}  (distance to brachistochrone arc)")
+        print(
+            f"Geodesic dev.  : max {geo['deviation'].max():.3e}  (distance to brachistochrone arc)"
+        )
         print(f"Total time     : {time.time() - t0:.1f}s")
 
     return GateOptResult(
         gate_set=seq.name,
-        n_gates=n_gates,
-        n_fock=n_fock,
+        n_gates=seq.n_gates,
+        n_fock=seq.n_fock,
         fidelity=fid,
         loss=loss_val,
         leakage=leak,
@@ -1733,17 +1643,12 @@ def optimize_gate_sequence(
         config={
             "loss_type": loss_type,
             "batch_reduction": batch_reduction,
-            "disp_method": disp_method,
-            "echoed": echoed,
-            "qubit_target": qubit_target,
-            "n_snap": n_snap,
-            "layer": layer,
-            "sq_method": sq_method,
             "bounds": bounds,
             "trajectory": trajectory,
             "optimizer": optimizer,
             "n_pairs": n_pairs,
         },
+        sequence=seq,
         trajectory=fid_path,
         penalties=penalties,
         qubit_purity=purity,
@@ -1751,36 +1656,24 @@ def optimize_gate_sequence(
     )
 
 
-def sequence_history(result: GateOptResult, psi_init, **kwargs) -> np.ndarray:
+def sequence_history(result: GateOptResult, psi_init) -> np.ndarray:
     """Re-run an optimized sequence and return the state after every gate.
 
     Useful for Wigner-function movies of the preparation: pair the output with
-    :func:`utils.wigner_trajectory` or :mod:`animation`.
+    :func:`utils.wigner_trajectory` or :mod:`animation`. Uses
+    ``result.sequence``, so the history is computed with exactly the ansatz
+    that was optimized.
 
     Returns
     -------
     ndarray
-        ``(2 * n_gates + 2, K, n_fock)`` for the SNAP set;
-        ``(2 * n_gates + 2, K, 2, n_fock)`` for ECD and CSQ ``layer="single"``;
-        ``(3 * n_gates + 2, K, 2, n_fock)`` for CSQ ``layer="ab"`` (one entry
-        after each of ``CS_A``, ``CS_B`` and the rotation). For qubit gate sets
-        the second-to-last axis indexes the qubit block ``(|g>, |e>)``.
+        The input state followed by the state after every gate:
+        ``(2 * n_gates + 2, K, n_fock)`` for SNAP and
+        ``(2 * n_gates + 2, K, 2, n_fock)`` for ECD and CSQ. For qubit gate
+        sets the second-to-last axis indexes the qubit block ``(|g>, |e>)``.
     """
-    cfg = result.config
-    psi_i = _as_ket_batch(psi_init, result.n_fock, "psi_init")
-    seq = build_sequence(
-        result.gate_set,
-        result.n_gates,
-        result.n_fock,
-        disp_method=kwargs.pop("disp_method", cfg.get("disp_method", "expm")),
-        sq_method=kwargs.pop("sq_method", cfg.get("sq_method", "eig")),
-        echoed=cfg.get("echoed", True),
-        qubit_target=cfg.get("qubit_target", "ground"),
-        n_snap=cfg.get("n_snap"),
-        layer=cfg.get("layer", "single"),
-        n_leak=cfg.get("bounds", GateBounds()).n_leak,
-        **kwargs,
-    )
+    seq = result.sequence
+    psi_i = _as_ket_batch(psi_init, seq.n_fock, "psi_init")
     return np.asarray(seq.history(jnp.asarray(result.flat_params), seq.lift(psi_i)))
 
 
@@ -1815,11 +1708,9 @@ if __name__ == "__main__":
     # Fock |2> with a shallow SNAP circuit.
     fock2 = jnp.zeros(n_fock, dtype=jnp.complex128).at[2].set(1.0)
     res_snap = optimize_gate_sequence(
-        "snap+displacements",
-        3,
+        snap_sequence(3, n_fock, n_snap=8),
         vac,
         fock2,
-        n_snap=8,
         loss_type="log_infidelity",
         optimizer=OptimizerConfig(n_seeds=6, n_adam_iters=600, seed=1),
     )
@@ -1832,13 +1723,11 @@ if __name__ == "__main__":
     cat = jnp.exp(log_coh) * (1 + (-1.0) ** n_vec)  # even cat, unnormalized
     cat = (cat / jnp.linalg.norm(cat)).astype(jnp.complex128)
     res_ecd = optimize_gate_sequence(
-        "ecd",
-        4,
+        ecd_sequence(4, n_fock, disp_method="quadrature", n_leak=4),
         vac,
         cat,
-        disp_method="quadrature",
         loss_type="log_infidelity",
-        bounds=GateBounds(max_disp=4.0, n_leak=4),
+        bounds=GateBounds(max_disp=4.0),
         optimizer=OptimizerConfig(n_seeds=6, n_adam_iters=600, seed=2),
     )
     print()
@@ -1847,13 +1736,11 @@ if __name__ == "__main__":
 
     # ECD constrained to stay near the vacuum -> cat brachistochrone.
     res_geo = optimize_gate_sequence(
-        "ecd",
-        6,
+        ecd_sequence(6, n_fock, disp_method="quadrature", n_leak=4),
         vac,
         cat,
-        disp_method="quadrature",
         loss_type="log_infidelity",
-        bounds=GateBounds(max_disp=4.0, n_leak=4),
+        bounds=GateBounds(max_disp=4.0),
         trajectory=TrajectoryPenalty.brachistochrone(weight=1.0, mode="tube"),
         optimizer=OptimizerConfig(n_seeds=6, n_adam_iters=600, seed=4),
     )
@@ -1863,18 +1750,15 @@ if __name__ == "__main__":
     print()
 
     # Same even cat with conditional squeezing (parity-allowed target).
-    for csq_layer in ("single", "ab"):
-        res_csq = optimize_gate_sequence(
-            "csq",
-            6,
-            vac,
-            cat,
-            layer=csq_layer,
-            loss_type="log_infidelity",
-            bounds=GateBounds(max_squeeze=0.8, n_leak=4),
-            trajectory=TrajectoryPenalty.notes_defaults(),
-            optimizer=OptimizerConfig(n_seeds=6, n_adam_iters=600, seed=3),
-        )
-        print()
-        print(res_csq.summary())
-        print(1)
+    res_csq = optimize_gate_sequence(
+        csq_sequence(6, n_fock, n_leak=4),
+        vac,
+        cat,
+        loss_type="log_infidelity",
+        bounds=GateBounds(max_squeeze=0.8),
+        trajectory=TrajectoryPenalty.notes_defaults(),
+        optimizer=OptimizerConfig(n_seeds=6, n_adam_iters=600, seed=3),
+    )
+    print()
+    print(res_csq.summary())
+    print("history shape:", sequence_history(res_csq, vac).shape)

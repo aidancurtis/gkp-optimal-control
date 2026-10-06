@@ -15,7 +15,7 @@ most often inspected for, up front):
     {
       "schema_version": 1,
       "metadata": {"saved_at": "...", "source": "..."},
-      "gate_set": "ecd",          # or "snap"
+      "gate_set": "ecd",          # or "snap", "csq"
       "n_gates": 12,
       "n_fock": 80,
       "n_params": 37,
@@ -30,7 +30,12 @@ most often inspected for, up front):
       "per_seed_fidelity": <ndarray>,
       "adam_history": <ndarray>,
       "polish_info": {...},
-      "config": {...}              # ansatz options + bounds/optimizer settings
+      "config": {...},             # loss / bounds / trajectory / optimizer settings
+      "ansatz": {...},             # builder kwargs to rebuild the GateSequence
+      "trajectory": <ndarray>,     # reduced-cavity fidelity after every layer
+      "penalties": {...},
+      "qubit_purity": ...,
+      "geodesic": {...}
     }
 
 NumPy arrays are stored with their ``dtype`` and ``shape``; complex arrays
@@ -52,18 +57,27 @@ Example
         optimize_gate_sequence, sequence_history,
     )
 
-    res = optimize_gate_sequence("ecd", 12, psi_init, gkp_0, ...)
+    seq = ecd_sequence(12, n_fock, disp_method="quadrature", n_leak=8)
+    res = optimize_gate_sequence(seq, psi_init, gkp_0, ...)
     path = save_gate_result(
         res,
-        gate_result_path("results", "ecd", 12, res.fidelity),
+        gate_result_path("results", "ecd", 12),
         initial_state=psi_init,
+        ansatz={"disp_method": "quadrature"},  # builder kwargs not on GateSequence
         source_notebook=__file__,
     )
 
     # Later (or in another notebook): skip the optimization entirely
-    loaded = load_gate_result(path)
+    loaded = load_gate_result(path)        # rebuilds loaded.sequence from "ansatz"
     traj = loaded.repropagate()            # cheap propagation from stored params
     assert np.allclose(traj[-1], loaded.final_state)
+
+The ansatz is stored under ``"ansatz"``: ``qubit_target``, ``n_leak`` and
+``n_snap`` are read off ``result.sequence``; builder options that a
+:class:`GateSequence` does not record (``disp_method``, ``sq_method``,
+``echoed``) must be passed via ``ansatz=`` or they fall back to the builder
+defaults on load. ``save_gate_result`` rebuilds the sequence before writing
+and refuses to save if its parameter count disagrees with ``flat_params``.
 """
 
 from __future__ import annotations
@@ -72,7 +86,7 @@ import functools
 import importlib
 import json
 import time
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 
 import numpy as np
@@ -80,13 +94,18 @@ import numpy as np
 from gkp_optimal_control.gate_optimization import (
     GateBounds,
     GateOptResult,
+    GateSequence,
     OptimizerConfig,
-    build_sequence,
+    TrajectoryPenalty,
+    csq_sequence,
+    ecd_sequence,
     sequence_history,
+    snap_sequence,
 )
 
 __all__ = [
     "GateResult",
+    "build_sequence",
     "save_gate_result",
     "load_gate_result",
     "gate_result_path",
@@ -98,7 +117,7 @@ _SCHEMA_VERSION = 1
 # need reconstructing on load so a loaded GateResult behaves like a live
 # GateOptResult. Extend here if gate_optimization gains more.
 _DATACLASS_REGISTRY: dict[str, type] = {
-    f"{c.__module__}.{c.__name__}": c for c in (GateBounds, OptimizerConfig)
+    f"{c.__module__}.{c.__name__}": c for c in (GateBounds, OptimizerConfig, TrajectoryPenalty)
 }
 
 
@@ -308,6 +327,43 @@ def _from_jsonable(obj):
 
 
 # ---------------------------------------------------------------------------
+# Ansatz reconstruction
+# ---------------------------------------------------------------------------
+
+_BUILDERS = {"ecd": ecd_sequence, "snap": snap_sequence, "csq": csq_sequence}
+# Builder kwargs that change propagation (init scales only affect seeding).
+_ANSATZ_KEYS = {
+    "ecd": ("disp_method", "echoed", "qubit_target", "n_leak"),
+    "snap": ("disp_method", "n_snap", "n_leak"),
+    "csq": ("sq_method", "qubit_target", "n_leak"),
+}
+
+
+def build_sequence(gate_set: str, n_gates: int, n_fock: int, **ansatz) -> GateSequence:
+    """Rebuild a :class:`GateSequence` from its gate-set name and builder kwargs.
+
+    Keys that do not apply to ``gate_set`` are ignored, so a single ``ansatz``
+    dict can be passed for any gate set.
+    """
+    try:
+        builder = _BUILDERS[gate_set]
+    except KeyError:
+        raise ValueError(f"unknown gate set {gate_set!r}; expected one of {sorted(_BUILDERS)}") from None
+    kwargs = {k: v for k, v in ansatz.items() if k in _ANSATZ_KEYS[gate_set] and v is not None}
+    return builder(n_gates, n_fock, **kwargs)
+
+
+def _derived_ansatz(seq: GateSequence) -> dict:
+    """Ansatz options recoverable from a live GateSequence."""
+    out: dict = {"n_leak": int(seq.n_leak)}
+    if seq.qubit_target is not None:
+        out["qubit_target"] = seq.qubit_target
+    if seq.name == "snap" and seq.n_gates > 0:
+        out["n_snap"] = int((seq.n_params - 2 * (seq.n_gates + 1)) // seq.n_gates)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -335,32 +391,28 @@ class GateResult(GateOptResult):
         UTC timestamp written by :func:`save_gate_result`.
     source : str
         Where the record came from (e.g. a notebook path).
+    ansatz : dict
+        Builder kwargs used to rebuild ``sequence`` (see :func:`build_sequence`).
+    metadata : dict
+        Everything stored under ``metadata`` at save time (e.g. wall time).
+
+    ``sequence`` is the rebuilt :class:`GateSequence`, so
+    :func:`~gkp_optimal_control.gate_optimization.sequence_history` and
+    ``optimize_gate_sequence(loaded.sequence, ..., params0=loaded.flat_params)``
+    work on a loaded result exactly as on a live one.
     """
 
     initial_state: np.ndarray | None = None
+    ansatz: dict = field(default_factory=dict)
+    metadata: dict = field(default_factory=dict)
     schema_version: int = _SCHEMA_VERSION
     saved_at: str = ""
     source: str = ""
 
-    def sequence(self):
-        """The :class:`GateSequence` this result was optimized for.
-
-        Rebuilt from the stored ansatz configuration, so it needs no live
-        optimizer state.
-        """
-        cfg = self.config
-        bounds = cfg.get("bounds")
-        n_leak = bounds.n_leak if bounds is not None else GateBounds().n_leak
-        return build_sequence(
-            self.gate_set,
-            self.n_gates,
-            self.n_fock,
-            disp_method=cfg.get("disp_method", "expm"),
-            echoed=cfg.get("echoed", True),
-            qubit_target=cfg.get("qubit_target", "ground"),
-            n_snap=cfg.get("n_snap"),
-            n_leak=n_leak,
-        )
+    @property
+    def final_state(self) -> np.ndarray:
+        """Alias for ``final_states`` (the on-disk key is ``final_state``)."""
+        return self.final_states
 
     def repropagate(self, psi_init=None) -> np.ndarray:
         """Re-derive the state trajectory from stored parameters (no optimization).
@@ -402,6 +454,7 @@ def save_gate_result(
     path,
     *,
     initial_state=None,
+    ansatz: dict | None = None,
     overwrite: bool = False,
     **metadata,
 ) -> Path:
@@ -419,6 +472,11 @@ def save_gate_result(
         store this, so pass it explicitly (``psi_init``) to make the saved
         record fully re-propagatable. If ``result`` is already a
         :class:`GateResult` with an ``initial_state``, that is used.
+    ansatz : dict, optional
+        Builder kwargs not recorded on :class:`GateSequence` (``disp_method``,
+        ``sq_method``, ``echoed``). Merged over the options derived from
+        ``result.sequence``. Defaults to the result's stored ansatz for a
+        :class:`GateResult`.
     overwrite : bool
         Allow overwriting an existing file.
     **metadata
@@ -442,6 +500,17 @@ def save_gate_result(
     if init is None and isinstance(result, GateResult):
         init = _to_array(result.initial_state)
 
+    spec = dict(result.ansatz) if isinstance(result, GateResult) else {}
+    spec.update(_derived_ansatz(result.sequence))
+    spec.update(ansatz or {})
+    rebuilt = build_sequence(result.gate_set, result.n_gates, result.n_fock, **spec)
+    n_flat = int(np.asarray(result.flat_params).size)
+    if rebuilt.n_params != n_flat:
+        raise ValueError(
+            f"ansatz {spec} rebuilds a {result.gate_set} sequence with "
+            f"{rebuilt.n_params} params, but the result has {n_flat}"
+        )
+
     record = {
         "schema_version": _SCHEMA_VERSION,
         "metadata": {
@@ -454,6 +523,7 @@ def save_gate_result(
         "n_fock": result.n_fock,
         "n_params": int(np.asarray(result.flat_params).size),
         "fidelity": float(result.fidelity),
+        "ansatz": _to_jsonable(spec, "ansatz"),
         "initial_state": _to_jsonable(init, "initial_state"),
         "final_state": _to_jsonable(result.final_states, "final_states"),
         "gate_parameters": _to_jsonable(dict(result.params), "params"),
@@ -465,6 +535,10 @@ def save_gate_result(
         "adam_history": _to_jsonable(result.adam_history, "adam_history"),
         "polish_info": _to_jsonable(result.polish_info, "polish_info"),
         "config": _to_jsonable(result.config, "config"),
+        "trajectory": _to_jsonable(result.trajectory, "trajectory"),
+        "penalties": _to_jsonable(result.penalties, "penalties"),
+        "qubit_purity": None if result.qubit_purity is None else float(result.qubit_purity),
+        "geodesic": _to_jsonable(result.geodesic, "geodesic"),
     }
     try:
         text = json.dumps(record, indent=2) + "\n"
@@ -493,6 +567,8 @@ def load_gate_result(path) -> GateResult:
             f"unsupported GateResult schema version {schema!r} (expected {_SCHEMA_VERSION})"
         )
     metadata = record.get("metadata", {})
+    ansatz = _from_jsonable(record.get("ansatz", {}))
+    seq = build_sequence(record["gate_set"], int(record["n_gates"]), int(record["n_fock"]), **ansatz)
 
     return GateResult(
         gate_set=record["gate_set"],
@@ -509,6 +585,13 @@ def load_gate_result(path) -> GateResult:
         adam_history=_from_jsonable(record["adam_history"]),
         polish_info=_from_jsonable(record.get("polish_info", {})),
         config=_from_jsonable(record.get("config", {})),
+        trajectory=_from_jsonable(record.get("trajectory")),
+        penalties=_from_jsonable(record.get("penalties", {})),
+        qubit_purity=record.get("qubit_purity"),
+        geodesic=_from_jsonable(record.get("geodesic", {})),
+        sequence=seq,
+        ansatz=ansatz,
+        metadata=_from_jsonable(metadata),
         initial_state=(
             _from_jsonable(record["initial_state"])
             if record.get("initial_state") is not None
