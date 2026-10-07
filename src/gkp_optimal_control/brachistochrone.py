@@ -65,7 +65,7 @@ def quantum_brachistochrone_hamiltonian(
     sigma_x_eff = proj_if + proj_fi
     sigma_y_eff = -1j * (proj_if - proj_fi)
 
-    h_optimal = energy_bound * (jnp.sin(phi) * sigma_x_eff + jnp.cos(phi) * sigma_y_eff)
+    h_optimal = energy_bound * (jnp.sin(phi) * sigma_x_eff - jnp.cos(phi) * sigma_y_eff)
     min_time = bures_angle / jnp.abs(energy_bound)
 
     return h_optimal, min_time
