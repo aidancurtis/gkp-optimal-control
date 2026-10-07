@@ -41,8 +41,7 @@ def quantum_brachistochrone_hamiltonian(
 
     References
     ----------
-    Carlini, A., Hosoya, A., Koike, T., & Okudaira, Y. (2006).
-    Time-optimal quantum evolution. *Physical Review Letters*, 96(6), 060503.
+    Yang and Del Campo
     """
     # Overlap <psi_i | psi_f> as a complex scalar.
     # jnp.vdot conjugates the first argument, matching the bra-ket convention.
@@ -66,7 +65,7 @@ def quantum_brachistochrone_hamiltonian(
     sigma_x_eff = proj_if + proj_fi
     sigma_y_eff = -1j * (proj_if - proj_fi)
 
-    h_optimal = energy_bound * (jnp.sin(phi) * sigma_x_eff - jnp.cos(phi) * sigma_y_eff)
+    h_optimal = energy_bound * (jnp.sin(phi) * sigma_x_eff + jnp.cos(phi) * sigma_y_eff)
     min_time = bures_angle / jnp.abs(energy_bound)
 
     return h_optimal, min_time
