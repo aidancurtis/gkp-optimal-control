@@ -92,7 +92,7 @@ def to_qarray(state: StateLike) -> jqt.Qarray:
     return jqt.Qarray.create(arr)
 
 
-def to_ket(state: StateLike) -> jnp.ndarray:
+def to_ket(state: StateLike, normalize: bool = True) -> jnp.ndarray:
     r"""Coerce a state into a flat, normalized 1D JAX ket.
 
     The reverse crossing to :func:`to_qarray`: use it when handing a state
@@ -103,6 +103,9 @@ def to_ket(state: StateLike) -> jnp.ndarray:
     ----------
     state : jaxquantum.Qarray or array_like
         A ``Qarray`` ket, a 1D ket ``(n,)``, or a column ket ``(n, 1)``.
+    normalize : bool, default True
+        Rescale to unit norm. Pass ``False`` where the norm carries meaning,
+        e.g. for a state about to be propagated linearly.
 
     Returns
     -------
@@ -122,7 +125,43 @@ def to_ket(state: StateLike) -> jnp.ndarray:
             "no ket representation."
         )
     amps = arr.reshape(-1)
-    return amps / jnp.linalg.norm(amps)
+    return amps / jnp.linalg.norm(amps) if normalize else amps
+
+
+def to_ket_batch(state, n_fock: int | None = None, name: str = "state"):
+    """Coerce one or more kets into a normalized ``(K, n_fock)`` complex array.
+
+    The batched counterpart of :func:`to_ket`, and the entry point for states
+    going into :mod:`gate_optimization`. ``n_fock`` checks the dimension and
+    ``name`` labels the argument in error messages.
+
+    Accepts a ``jaxquantum.Qarray`` (single or batched), a raw ``(d,)``,
+    ``(d, 1)``, ``(K, d)`` or ``(K, d, 1)`` array, or a list of any of those.
+    """
+    if isinstance(state, (list, tuple)):
+        rows = [to_ket_batch(s, n_fock, name) for s in state]
+        data = jnp.concatenate(rows, axis=0)
+    else:
+        if isinstance(state, jqt.Qarray):
+            data = state.data
+        else:
+            data = state
+        data = jnp.asarray(data)
+        if data.ndim >= 2 and data.shape[-1] == 1:
+            data = data[..., 0]
+        if data.ndim == 1:
+            data = data[None, :]
+        elif data.ndim > 2:
+            data = data.reshape(-1, data.shape[-1])
+
+    if n_fock is not None and data.shape[-1] != n_fock:
+        raise ValueError(f"{name} has Fock dimension {data.shape[-1]}, expected n_fock={n_fock}.")
+
+    data = data.astype(jnp.result_type(complex))
+    norms = jnp.linalg.norm(data, axis=-1, keepdims=True)
+    if bool(jnp.any(norms == 0)):
+        raise ValueError(f"{name} contains a zero vector.")
+    return data / norms
 
 
 def compute_wigner(
@@ -165,11 +204,7 @@ def compute_wigner(
 
 
 def wigner_trajectory(
-    states,
-    x_bound: float,
-    y_bound: float,
-    grid_points: int = 100,
-    slices: list[int] | None = None
+    states, x_bound: float, y_bound: float, grid_points: int = 100, slices: list[int] | None = None
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     r"""Compute Wigner distributions along a trajectory of states.
 

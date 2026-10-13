@@ -18,8 +18,8 @@ import pytest
 from scipy.linalg import expm
 
 import gkp_optimal_control  # noqa: F401  (enables 64-bit JAX)
-from gkp_optimal_control import gate_optimization as go
 from gkp_optimal_control import operators as op
+from gkp_optimal_control import sequences as sq
 
 N_FOCK = 48
 LOW = 16
@@ -165,7 +165,7 @@ def test_displaced_vacuum_is_coherent_state(build):
     d_op = np.asarray(build())
     n = np.arange(LOW)
     log_fact = np.cumsum(np.log(np.maximum(n, 1)))
-    coherent = np.exp(-abs(ALPHA) ** 2 / 2) * ALPHA**n / np.exp(0.5 * log_fact)
+    coherent = np.exp(-(abs(ALPHA) ** 2) / 2) * ALPHA**n / np.exp(0.5 * log_fact)
     np.testing.assert_allclose(d_op[:LOW, 0], coherent, atol=1e-12)
 
 
@@ -213,7 +213,7 @@ def test_qubit_rotation_matches_convention(theta, phi):
 def test_ecd_gate_matches_definition(method):
     """ECD(beta) = D(beta/2)|e><g| + D(-beta/2)|g><e|, with identity rotations."""
     beta = 0.7 - 0.5j
-    seq = go.ecd_sequence(1, N_FOCK, disp_method=method)
+    seq = sq.ecd_sequence(1, N_FOCK, disp_method=method)
     flat = _ecd_flat([0.0, 0.0], [0.0, 0.0], [beta])
     psi_g, psi_e = _low_kets(1)
     psi_in = jnp.asarray(np.stack([psi_g, psi_e])[None])  # (1, 2, n_fock)
@@ -227,8 +227,8 @@ def test_echoed_gate_is_qubit_flip_of_bare_conditional(method):
     thetas, phis, betas = _ecd_params(1, seed=4)
     flat = _ecd_flat([thetas[0], 0.0], [phis[0], 0.0], betas)
     psi0 = _low_kets(2)
-    echoed = _run(go.ecd_sequence(1, N_FOCK, disp_method=method, echoed=True), flat, psi0)
-    bare = _run(go.ecd_sequence(1, N_FOCK, disp_method=method, echoed=False), flat, psi0)
+    echoed = _run(sq.ecd_sequence(1, N_FOCK, disp_method=method, echoed=True), flat, psi0)
+    bare = _run(sq.ecd_sequence(1, N_FOCK, disp_method=method, echoed=False), flat, psi0)
     np.testing.assert_allclose(echoed, bare[:, ::-1, :], atol=1e-12)
 
 
@@ -236,7 +236,7 @@ def test_echoed_gate_is_qubit_flip_of_bare_conditional(method):
 @pytest.mark.parametrize("n_gates", [1, 2, 4])
 def test_ecd_sequence_matches_dense_reference(n_gates, method):
     thetas, phis, betas = _ecd_params(n_gates, seed=n_gates)
-    seq = go.ecd_sequence(n_gates, N_FOCK, disp_method=method)
+    seq = sq.ecd_sequence(n_gates, N_FOCK, disp_method=method)
     psi0 = _low_kets(5)
     out = _run(seq, _ecd_flat(thetas, phis, betas), psi0)
     assert out.shape == (len(psi0), 2, N_FOCK)
@@ -249,7 +249,7 @@ def test_ecd_sequence_matches_dense_reference(n_gates, method):
 def test_ecd_history_matches_reference_and_conserves_norm(method):
     n_gates = 3
     thetas, phis, betas = _ecd_params(n_gates, seed=6)
-    seq = go.ecd_sequence(n_gates, N_FOCK, disp_method=method)
+    seq = sq.ecd_sequence(n_gates, N_FOCK, disp_method=method)
     flat = _ecd_flat(thetas, phis, betas)
     psi0 = _low_kets(7)
     hist = np.asarray(seq.history(flat, seq.lift(jnp.asarray(psi0))))
@@ -264,7 +264,7 @@ def test_ecd_history_matches_reference_and_conserves_norm(method):
 def test_ecd_parameter_layout():
     n_gates = 3
     thetas, phis, betas = _ecd_params(n_gates, seed=30)
-    seq = go.ecd_sequence(n_gates, N_FOCK)
+    seq = sq.ecd_sequence(n_gates, N_FOCK)
     flat = _ecd_flat(thetas, phis, betas)
     assert seq.n_params == 4 * n_gates + 2 == flat.shape[0]
     assert seq.init(jax.random.PRNGKey(0)).shape == (seq.n_params,)
@@ -281,7 +281,7 @@ def test_ecd_parameter_layout():
 
 
 def test_ecd_ground_overlap_scores_only_the_ground_block():
-    seq = go.ecd_sequence(2, N_FOCK)
+    seq = sq.ecd_sequence(2, N_FOCK)
     psi0 = _low_kets(11)
     psi = seq.propagate(_ecd_flat(*_ecd_params(2, seed=31)), seq.lift(jnp.asarray(psi0)))[0]
     targets = jnp.asarray(_low_kets(12))
@@ -308,7 +308,7 @@ def _snap_reference(phases, alphas, psi0) -> np.ndarray:
 @pytest.mark.parametrize("n_gates", [1, 2, 3])
 def test_snap_sequence_matches_dense_product(n_gates, method):
     phases, alphas = _snap_params(n_gates, seed=n_gates)
-    seq = go.snap_sequence(n_gates, N_FOCK, disp_method=method)
+    seq = sq.snap_sequence(n_gates, N_FOCK, disp_method=method)
     psi0 = _low_kets(40)
     out = _run(seq, _snap_flat(phases, alphas), psi0)
     assert out.shape == psi0.shape
@@ -319,7 +319,7 @@ def test_snap_sequence_matches_dense_product(n_gates, method):
 def test_snap_gate_is_diagonal_phase(method):
     """With zero displacements a SNAP multiplies each Fock amplitude by its phase."""
     phases, _ = _snap_params(1, seed=41)
-    seq = go.snap_sequence(1, N_FOCK, disp_method=method)
+    seq = sq.snap_sequence(1, N_FOCK, disp_method=method)
     rng = np.random.default_rng(42)
     psi0 = rng.normal(size=(2, N_FOCK)) + 1j * rng.normal(size=(2, N_FOCK))
     psi0 /= np.linalg.norm(psi0, axis=-1, keepdims=True)
@@ -335,8 +335,8 @@ def test_truncated_snap_equals_zero_padded_full_snap():
     padded[:, :n_snap] = phases
     psi0 = _low_kets(44)
 
-    short = go.snap_sequence(n_gates, N_FOCK, n_snap=n_snap)
-    full = go.snap_sequence(n_gates, N_FOCK)
+    short = sq.snap_sequence(n_gates, N_FOCK, n_snap=n_snap)
+    full = sq.snap_sequence(n_gates, N_FOCK)
     assert short.n_params == n_gates * n_snap + 2 * (n_gates + 1)
     assert full.n_params == n_gates * N_FOCK + 2 * (n_gates + 1)
     np.testing.assert_allclose(
@@ -350,7 +350,7 @@ def test_truncated_snap_equals_zero_padded_full_snap():
 def test_snap_with_zero_phases_collapses_to_one_displacement(method):
     n_gates = 3
     _, alphas = _snap_params(n_gates, seed=45)
-    seq = go.snap_sequence(n_gates, N_FOCK, disp_method=method)
+    seq = sq.snap_sequence(n_gates, N_FOCK, disp_method=method)
     psi0 = _low_kets(46)
     out = _run(seq, _snap_flat(np.zeros((n_gates, N_FOCK)), alphas), psi0)
     total, phase = _displacement_product(alphas)
@@ -362,7 +362,7 @@ def test_snap_with_zero_phases_collapses_to_one_displacement(method):
 def test_snap_history_matches_gate_by_gate_reference(method):
     n_gates = 2
     phases, alphas = _snap_params(n_gates, seed=47)
-    seq = go.snap_sequence(n_gates, N_FOCK, disp_method=method)
+    seq = sq.snap_sequence(n_gates, N_FOCK, disp_method=method)
     flat = _snap_flat(phases, alphas)
     psi0 = _low_kets(48)
     hist = np.asarray(seq.history(flat, seq.lift(jnp.asarray(psi0))))
@@ -383,7 +383,7 @@ def test_snap_history_matches_gate_by_gate_reference(method):
 def test_snap_parameter_layout():
     n_gates, n_snap = 2, 6
     phases, alphas = _snap_params(n_gates, n_snap=n_snap, seed=49)
-    seq = go.snap_sequence(n_gates, N_FOCK, n_snap=n_snap)
+    seq = sq.snap_sequence(n_gates, N_FOCK, n_snap=n_snap)
     flat = _snap_flat(phases, alphas)
     assert seq.n_params == flat.shape[0]
     assert seq.init(jax.random.PRNGKey(0)).shape == (seq.n_params,)
@@ -407,4 +407,4 @@ def test_snap_parameter_layout():
 @pytest.mark.parametrize("bad", [0, N_FOCK + 1])
 def test_snap_rejects_out_of_range_phase_count(bad):
     with pytest.raises(ValueError, match="n_snap"):
-        go.snap_sequence(1, N_FOCK, n_snap=bad)
+        sq.snap_sequence(1, N_FOCK, n_snap=bad)

@@ -1,11 +1,24 @@
+r"""Cavity state constructors.
+
+Every function returns a normalized ket as a plain 1-D complex JAX array of
+shape ``(n_fock,)``. That is the one state representation used across the
+package: it works directly with ``jax.numpy``, and every library function
+accepts it (they also accept a ``jaxquantum.Qarray`` or a column vector and
+convert on entry). To hand a state to jaxquantum itself, wrap it with
+:func:`utils.to_qarray`.
+"""
+
 from functools import partial
 
 import jax
 import jax.numpy as jnp
-import jaxquantum as jqt
 
 
-def cat_states(n_fock: int, alpha: complex) -> tuple[jqt.Qarray, jqt.Qarray]:
+def _unit(ket: jnp.ndarray) -> jnp.ndarray:
+    return ket / jnp.linalg.norm(ket)
+
+
+def cat_states(n_fock: int, alpha: complex) -> tuple[jnp.ndarray, jnp.ndarray]:
     r"""Return normalized even and odd Schrödinger-cat states.
 
     Parameters
@@ -17,18 +30,17 @@ def cat_states(n_fock: int, alpha: complex) -> tuple[jqt.Qarray, jqt.Qarray]:
 
     Returns
     -------
-    even : jaxquantum.Qobj
-        Normalized even cat, :math:`(|\alpha\rangle + |-\alpha\rangle) / \mathcal{N}_+`.
-    odd : qutip.Qobj
+    even : jnp.ndarray
+        Normalized even cat, :math:`(|\alpha\rangle + |-\alpha\rangle) / \mathcal{N}_+`,
+        shape ``(n_fock,)``.
+    odd : jnp.ndarray
         Normalized odd cat, :math:`(|\alpha\rangle - |-\alpha\rangle) / \mathcal{N}_-`.
     """
-    even_cat = jqt.coherent(n_fock, alpha) + jqt.coherent(n_fock, -alpha)
-    odd_cat = jqt.coherent(n_fock, alpha) - jqt.coherent(n_fock, -alpha)
-
-    return jqt.unit(even_cat), jqt.unit(odd_cat)
+    plus, minus = coherent_state_vectors(n_fock, jnp.asarray([alpha, -alpha], dtype=complex))
+    return _unit(plus + minus), _unit(plus - minus)
 
 
-def _coherent_state_vectors(n_fock: int, alphas: jnp.ndarray) -> jnp.ndarray:
+def coherent_state_vectors(n_fock: int, alphas: jnp.ndarray) -> jnp.ndarray:
     """Compute coherent-state Fock-basis column vectors for a batch of alphas.
 
     Parameters
@@ -75,7 +87,7 @@ def gkp_states(
     beta: complex,
     delta: float,
     cutoff: int,
-) -> tuple[jqt.Qarray, jqt.Qarray]:
+) -> tuple[jnp.ndarray, jnp.ndarray]:
     r"""Return the two finite-energy GKP logical states.
 
     The states are :math:`E_\Delta|\mu\rangle` with
@@ -130,9 +142,9 @@ def gkp_states(
 
     Returns
     -------
-    gkp_0 : jaxquantum.Qarray
-        Normalized finite-energy logical :math:`|0_L\rangle`.
-    gkp_1 : jaxquantum.Qarray
+    gkp_0 : jnp.ndarray
+        Normalized finite-energy logical :math:`|0_L\rangle`, shape ``(n_fock,)``.
+    gkp_1 : jnp.ndarray
         Normalized finite-energy logical :math:`|1_L\rangle`.
     """
     # Build the 2D grid of lattice indices (k, j) once.
@@ -152,7 +164,7 @@ def gkp_states(
 
         # Peaks: each row is the coherent state |e^{-Delta^2} d> in the Fock
         # basis, i.e. E_Delta |d> up to the scalar weight applied below.
-        peaks = _coherent_state_vectors(n_fock, contraction * displacements)  # (M, n_fock)
+        peaks = coherent_state_vectors(n_fock, contraction * displacements)  # (M, n_fock)
 
         # Phase factor that alternates the sublattice signs.
         phases = jnp.exp(-1j * jnp.pi * (k_flat + i / 2) * j_flat)  # (M,)
@@ -164,17 +176,11 @@ def gkp_states(
         combined = (phases * weights)[:, None] * peaks  # (M, n_fock)
         return jnp.sum(combined, axis=0)  # (n_fock,)
 
-    gkp_0_data = build_logical(0)
-    gkp_1_data = build_logical(1)
-
-    gkp_0 = jqt.Qarray.create(gkp_0_data.reshape(n_fock, 1))
-    gkp_1 = jqt.Qarray.create(gkp_1_data.reshape(n_fock, 1))
-
-    return gkp_0.unit(), gkp_1.unit()
+    return _unit(build_logical(0)), _unit(build_logical(1))
 
 
 @partial(jax.jit, static_argnames=("n_fock",))
-def squeezed_vacuum(n_fock: int, r: float, phi: float = 0.0) -> jqt.Qarray:
+def squeezed_vacuum(n_fock: int, r: float, phi: float = 0.0) -> jnp.ndarray:
     r"""Return the squeezed vacuum :math:`S(\xi)|0\rangle`, :math:`\xi = r e^{i\phi}`.
 
     Uses :math:`S(\xi) = \exp[\tfrac{1}{2}(\xi^* a^2 - \xi a^{\dagger 2})]`, the same
@@ -192,8 +198,8 @@ def squeezed_vacuum(n_fock: int, r: float, phi: float = 0.0) -> jqt.Qarray:
 
     Returns
     -------
-    jaxquantum.Qarray
-        Normalized squeezed vacuum (renormalized after truncation).
+    jnp.ndarray
+        Normalized squeezed vacuum (renormalized after truncation), shape ``(n_fock,)``.
     """
     m = jnp.arange((n_fock + 1) // 2)
     log_mag = (
@@ -204,11 +210,10 @@ def squeezed_vacuum(n_fock: int, r: float, phi: float = 0.0) -> jqt.Qarray:
     )
     coeffs = jnp.exp(log_mag) * (-jnp.exp(1j * phi) * jnp.tanh(r)) ** m
 
-    data = jnp.zeros(n_fock, dtype=coeffs.dtype).at[2 * m].set(coeffs)
-    return jqt.Qarray.create(data.reshape(n_fock, 1)).unit()
+    return _unit(jnp.zeros(n_fock, dtype=coeffs.dtype).at[2 * m].set(coeffs))
 
 
-def fock_state(n_fock: int, n: int) -> jqt.Qarray:
+def fock_state(n_fock: int, n: int) -> jnp.ndarray:
     r"""Return the Fock state :math:`|n\rangle`.
 
     Parameters
@@ -220,10 +225,9 @@ def fock_state(n_fock: int, n: int) -> jqt.Qarray:
 
     Returns
     -------
-    jaxquantum.Qarray
-        The basis ket :math:`|n\rangle` as an ``(n_fock, 1)`` column vector.
+    jnp.ndarray
+        The basis ket :math:`|n\rangle`, shape ``(n_fock,)``.
     """
     if not 0 <= n < n_fock:
         raise ValueError(f"n={n} is outside the truncated space [0, {n_fock}).")
-    data = jnp.zeros((n_fock, 1), dtype=jnp.complex128).at[n, 0].set(1.0)
-    return jqt.Qarray.create(data)
+    return jnp.zeros(n_fock, dtype=jnp.complex128).at[n].set(1.0)

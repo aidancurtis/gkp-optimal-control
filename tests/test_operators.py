@@ -4,7 +4,6 @@ import numpy as np
 
 import gkp_optimal_control  # noqa: F401  (enables 64-bit JAX)
 from gkp_optimal_control import operators as op
-from gkp_optimal_control import pulse_simulation as ps
 
 N_FOCK = 12
 
@@ -47,5 +46,4 @@ def test_pauli_matrices():
 def test_displacement_builder_is_cached_and_shared():
     assert op.make_displacement(N_FOCK) is op.make_displacement(N_FOCK)
     alpha = 0.4 - 0.3j
-    np.testing.assert_allclose(ps._displace_np(N_FOCK, alpha), op.displacement(N_FOCK, alpha))
-    assert isinstance(ps._displace_np(N_FOCK, alpha), np.ndarray)
+    np.testing.assert_allclose(op.displacement(N_FOCK, alpha), op.make_displacement(N_FOCK)(alpha))

@@ -225,6 +225,14 @@ def plot_photon_number(
 
     return ax
 
+
+def _wigner_norm(reference: StateLike, x_bound: float, y_bound: float, grid_points: int):
+    """Symmetric colour norm set by the peak Wigner value of ``reference``."""
+    _, _, wigner = compute_wigner(reference, x_bound, y_bound, grid_points)
+    wmax = float(np.abs(wigner).max())
+    return mpl_colors.TwoSlopeNorm(vmin=-wmax, vcenter=0.0, vmax=wmax)
+
+
 def plot_wigner_snapshots(
     states: list,
     psi_f: StateLike,
@@ -282,8 +290,8 @@ def plot_wigner_snapshots(
     """
 
     fracs = np.linspace(0.0, 1.0, n_snapshots)
-    slices = [int(np.ceil(frac * (len(states)-1))) for frac in fracs]
-    gs = {'width_ratios': [1] * len(fracs) + [0.07]}
+    slices = [int(np.ceil(frac * (len(states) - 1))) for frac in fracs]
+    gs = {"width_ratios": [1] * len(fracs) + [0.07]}
 
     if labels is None:
         labels = [rf"$t/T^*$ = {frac:.2f}" for frac in fracs]
@@ -291,13 +299,15 @@ def plot_wigner_snapshots(
         raise ValueError(f"expected {len(fracs)} labels, got {len(labels)}")
 
     # 14 in fits five panels; wider rows grow so panels keep their size.
-    fig, ax = plt.subplots(1, len(fracs) + 1, figsize=(max(14.0, 2.8 * len(fracs)), 3.75),
-                           gridspec_kw=gs, constrained_layout=True,)
+    fig, ax = plt.subplots(
+        1,
+        len(fracs) + 1,
+        figsize=(max(14.0, 2.8 * len(fracs)), 3.75),
+        gridspec_kw=gs,
+        constrained_layout=True,
+    )
 
-    # find bounds for wigner plot based on final state
-    _, _, wigner = compute_wigner(psi_f, x_bound, y_bound, grid_points)
-    wmax = float(np.abs(wigner).max())
-    norm = mpl_colors.TwoSlopeNorm(vmin=-wmax, vcenter=0.0, vmax=wmax)
+    norm = _wigner_norm(psi_f, x_bound, y_bound, grid_points)
 
     # compute wigner frams
     x, y, frames = wigner_trajectory(states, x_bound, y_bound, grid_points, slices)
@@ -332,3 +342,133 @@ def plot_wigner_snapshots(
         fig.suptitle(title)
 
     return ax
+
+
+def plot_wigner_grid(
+    states,
+    psi_f: StateLike,
+    x_bound: float,
+    y_bound: float,
+    *,
+    labels: list[str] | None = None,
+    annotations: list[str] | None = None,
+    curve=None,
+    curve_label: str = "Fidelity",
+    n_cols: int | None = None,
+    grid_points: int = 120,
+    title: str | None = None,
+):
+    """Plot a wrapped grid of Wigner functions, one square panel per state.
+
+    The many-panel counterpart of :func:`plot_wigner_snapshots`: panels flow
+    left to right and top to bottom, so the figure stays near page proportions
+    however long the sequence is. All panels share one colour scale, set by
+    the peak Wigner value of ``psi_f``, and one colourbar.
+
+    Parameters
+    ----------
+    states : sequence
+        States to draw, each a ket or density matrix (anything
+        :func:`utils.wigner_trajectory` accepts).
+    psi_f : StateLike
+        Reference state that fixes the shared colour scale.
+    x_bound, y_bound : float
+        Half-widths of the phase-space window along q and p.
+    labels : list of str, optional
+        One short label per panel, drawn inside its top-left corner.
+    annotations : list of str, optional
+        One line per panel, drawn inside its bottom-left corner (e.g. a fidelity).
+    curve : sequence of float, optional
+        One value per panel. When given, a strip under the grid plots it against
+        the panel index, to show how a quantity evolves along the sequence.
+    curve_label : str
+        Axis label of that strip.
+    n_cols : int, optional
+        Panels per row. Defaults to the most even split with at most 6 columns.
+    grid_points : int
+        Samples per phase-space axis.
+    title : str, optional
+        Figure-level title.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The panels are the first ``len(states)`` entries of ``fig.axes``.
+    """
+    n = len(states)
+    if n == 0:
+        raise ValueError("no states to plot")
+    for name, items in (("labels", labels), ("annotations", annotations), ("curve", curve)):
+        if items is not None and len(items) != n:
+            raise ValueError(f"expected {n} {name}, got {len(items)}")
+    if n_cols is None:
+        n_cols = int(np.ceil(n / np.ceil(n / 6)))  # fewest rows of <= 6, split evenly
+    n_cols = max(1, min(int(n_cols), n))
+    n_rows = int(np.ceil(n / n_cols))
+
+    norm = _wigner_norm(psi_f, x_bound, y_bound, grid_points)
+    _, _, frames = wigner_trajectory(states, x_bound, y_bound, grid_points)
+
+    strip = curve is not None
+    fig = plt.figure(
+        figsize=(2.2 * n_cols + 1.0, 2.25 * n_rows + (2.0 if strip else 0.0) + 0.4),
+        constrained_layout=True,
+    )
+    grid = fig.add_gridspec(
+        n_rows + strip,
+        n_cols + 1,
+        width_ratios=[1.0] * n_cols + [0.07],
+        height_ratios=[1.0] * n_rows + [0.75] * strip,
+    )
+
+    image = None
+    for i in range(n):
+        row, col = divmod(i, n_cols)
+        ax = fig.add_subplot(grid[row, col])
+        image = ax.imshow(
+            frames[i],
+            extent=(-x_bound, x_bound, -y_bound, y_bound),
+            origin="lower",
+            cmap="RdBu_r",
+            norm=norm,
+            interpolation="bilinear",
+            aspect="equal",
+            rasterized=True,
+        )
+        ax.set_xticks([-x_bound, 0, x_bound])
+        ax.set_yticks([-y_bound, 0, y_bound])
+        # Tick labels only where a panel has no neighbour to the left / below.
+        if col == 0:
+            ax.set_ylabel("p")
+        else:
+            ax.set_yticklabels([])
+        if i + n_cols >= n:
+            ax.set_xlabel("q")
+        else:
+            ax.set_xticklabels([])
+        box = {"facecolor": "white", "alpha": 0.75, "edgecolor": "none", "pad": 1.5}
+        if labels is not None:
+            ax.text(0.04, 0.96, labels[i], transform=ax.transAxes, va="top", ha="left",
+                    fontsize=10, bbox=box)  # fmt: skip
+        if annotations is not None:
+            ax.text(0.04, 0.04, annotations[i], transform=ax.transAxes, va="bottom", ha="left",
+                    fontsize=9, bbox=box)  # fmt: skip
+
+    cbar = fig.colorbar(image, cax=fig.add_subplot(grid[:n_rows, -1]))
+    cbar.set_label(r"$W(q,p)$")
+
+    if strip:
+        ax = fig.add_subplot(grid[n_rows, :n_cols])
+        ax.plot(np.arange(n), np.asarray(curve, dtype=float), "o-", ms=4, lw=1.2, color="0.2")
+        ax.set_xlim(-0.5, n - 0.5)
+        ax.set_ylabel(curve_label)
+        ax.grid(alpha=0.3)
+        every = int(np.ceil(n / 30))  # keep the tick labels legible on long sequences
+        ticks = np.arange(0, n, every)
+        ax.set_xticks(ticks)
+        if labels is not None:
+            ax.set_xticklabels([labels[k] for k in ticks], rotation=60, ha="right", fontsize=8)
+
+    if title:
+        fig.suptitle(title)
+    return fig

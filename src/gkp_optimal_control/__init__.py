@@ -16,22 +16,26 @@ from gkp_optimal_control.gate_optimization import (  # noqa: E402
     GateOptResult,
     OptimizerConfig,
     TrajectoryPenalty,
-    csq_sequence,
-    ecd_sequence,
     optimize_gate_sequence,
     sequence_history,
-    snap_sequence,
 )
 from gkp_optimal_control.gate_results import (  # noqa: E402
     gate_result_path,
+    list_gate_results,
     load_gate_result,
     save_gate_result,
 )
 from gkp_optimal_control.plotting import (  # noqa: E402
     plot_photon_number,
     plot_wigner,
+    plot_wigner_grid,
     plot_wigner_snapshots,
     set_plot_style,
+)
+from gkp_optimal_control.sequences import (  # noqa: E402
+    csq_sequence,
+    ecd_sequence,
+    snap_sequence,
 )
 from gkp_optimal_control.states import (  # noqa: E402
     cat_states,
@@ -42,6 +46,7 @@ from gkp_optimal_control.states import (  # noqa: E402
 from gkp_optimal_control.utils import (  # noqa: E402
     compute_wigner,
     to_ket,
+    to_ket_batch,
     to_qarray,
     wigner_trajectory,
 )
@@ -59,10 +64,12 @@ __all__ = [
     "fock_state",
     "gate_result_path",
     "gkp_states",
+    "list_gate_results",
     "load_gate_result",
     "optimize_gate_sequence",
     "plot_photon_number",
     "plot_wigner",
+    "plot_wigner_grid",
     "plot_wigner_snapshots",
     "quantum_brachistochrone_hamiltonian",
     "save_gate_result",
@@ -71,6 +78,7 @@ __all__ = [
     "snap_sequence",
     "squeezed_vacuum",
     "to_ket",
+    "to_ket_batch",
     "to_qarray",
     "wigner_trajectory",
 ]

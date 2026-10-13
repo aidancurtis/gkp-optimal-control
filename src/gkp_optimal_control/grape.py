@@ -23,6 +23,8 @@ from jax import lax, value_and_grad
 from jax.scipy.linalg import expm
 from scipy.optimize import minimize
 
+from .utils import to_ket
+
 
 @dataclass
 class System:
@@ -30,8 +32,11 @@ class System:
 
     H_drift: jnp.ndarray  # (dim, dim)
     H_controls: jnp.ndarray  # (n_controls, dim, dim)
-    psi_init: jnp.ndarray  # (dim,) — single state-transfer for now
-    psi_targ: jnp.ndarray  # (dim,)
+    psi_init: jnp.ndarray  # any ket form; stored as a normalized (dim,) array
+    psi_targ: jnp.ndarray
+
+    def __post_init__(self):
+        self.psi_init, self.psi_targ = to_ket(self.psi_init), to_ket(self.psi_targ)
 
     @property
     def n_controls(self) -> int:
@@ -104,8 +109,8 @@ def forward_evolve(
         Pulse array of shape ``(n_controls, n_steps)``.
     dt : float
         Time per slice.
-    psi_0 : jnp.ndarray
-        Initial ket of shape ``(dim,)``.
+    psi_0 : array_like or jaxquantum.Qarray
+        Initial ket, any ket shape; not renormalized.
     h_drift, h_controls : jnp.ndarray
         Drift Hamiltonian ``(dim, dim)`` and control stack
         ``(n_controls, dim, dim)``.
@@ -119,7 +124,7 @@ def forward_evolve(
         psi = expm(-1j * dt * h_sys) @ psi
         return psi, (psi if return_history else None)
 
-    psi_f, history = lax.scan(step, psi_0, pulse.T)
+    psi_f, history = lax.scan(step, to_ket(psi_0, normalize=False), pulse.T)
     return (psi_f, history) if return_history else psi_f
 
 

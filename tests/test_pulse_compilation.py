@@ -27,10 +27,10 @@ from scipy.linalg import expm
 
 import gkp_optimal_control  # noqa: F401  (enables 64-bit JAX)
 from gkp_optimal_control import device
-from gkp_optimal_control import gate_optimization as go
 from gkp_optimal_control import operators as op
 from gkp_optimal_control import pulse_simulation as ps
 from gkp_optimal_control import pulses as pl
+from gkp_optimal_control import sequences as sq
 
 DEVICES = Path(__file__).resolve().parents[1] / "devices"
 TWO_PI = 2 * np.pi
@@ -60,7 +60,7 @@ def _vacuum(n_fock: int) -> np.ndarray:
 
 def _ideal_ecd(thetas, phis, betas, n_fock: int) -> np.ndarray:
     """Final ``(2, n_fock)`` block state of the ideal ECD circuit from ``|g>|0>``."""
-    seq = go.ecd_sequence(len(betas), n_fock, disp_method="exact")
+    seq = sq.ecd_sequence(len(betas), n_fock, disp_method="exact")
     betas = np.asarray(betas, dtype=complex)
     flat = np.concatenate(
         [np.stack([thetas, phis], -1).ravel(), np.stack([betas.real, betas.imag], -1).ravel()]
@@ -224,7 +224,7 @@ def test_rotation_waveform_realizes_the_ideal_rotation(theta, phi):
     unitary = np.eye(2, dtype=complex)
     for om in omega:
         unitary = expm(-1j * DEFAULT.dt * np.array([[0, np.conj(om)], [om, 0]])) @ unitary
-    np.testing.assert_allclose(unitary, np.asarray(go.qubit_rotation(theta, phi)), atol=1e-12)
+    np.testing.assert_allclose(unitary, np.asarray(op.qubit_rotation(theta, phi)), atol=1e-12)
 
 
 # ---------------------------------------------------------------------------
@@ -671,7 +671,7 @@ def test_compiled_snap_sequence_reproduces_ideal_circuit(snap_device):
     phases = rng.uniform(-np.pi, np.pi, (n_gates, n_snap))
     alphas = 0.5 * (rng.normal(size=n_gates + 1) + 1j * rng.normal(size=n_gates + 1))
 
-    ideal_seq = go.snap_sequence(n_gates, n_fock, n_snap=n_snap)
+    ideal_seq = sq.snap_sequence(n_gates, n_fock, n_snap=n_snap)
     flat = np.concatenate([phases.ravel(), np.stack([alphas.real, alphas.imag], -1).ravel()])
     vac = jnp.asarray(_vacuum(n_fock))[None]
     ideal = np.asarray(ideal_seq.propagate(jnp.asarray(flat), vac)[0])

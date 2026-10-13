@@ -31,20 +31,23 @@ State specs
 
 Plot
 ----
-After the optimization a row of Wigner functions opens, one panel for the
+After the optimization a grid of Wigner functions opens, one panel for the
 input state and one after every gate that changes the cavity state (every ECD
-or conditional squeezer; every displacement and SNAP). For the qubit gate sets
-the qubit is traced out. ``--save-plot`` also writes the figure as a PNG and
-``--no-plot`` skips the window, e.g. when running in a loop.
+or conditional squeezer; every displacement and SNAP), each labelled with its
+fidelity to the target, with that fidelity plotted along the sequence
+underneath. For the qubit gate sets the qubit is traced out. ``--save-plot``
+also writes the figure as a PNG and ``--no-plot`` skips the window, e.g. when
+running in a loop.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
-import jaxquantum as jqt
+import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -52,13 +55,19 @@ import gkp_optimal_control  # noqa: F401  (enables 64-bit JAX)
 from gkp_optimal_control.gate_optimization import (
     GateBounds,
     OptimizerConfig,
-    build_sequence,
     optimize_gate_sequence,
     sequence_history,
 )
-from gkp_optimal_control.gate_results import gate_result_path, save_gate_result
-from gkp_optimal_control.plotting import plot_wigner_snapshots, set_plot_style
-from gkp_optimal_control.states import cat_states, fock_state, gkp_states, squeezed_vacuum
+from gkp_optimal_control.gate_results import DEFAULT_ROOT, gate_result_path, save_gate_result
+from gkp_optimal_control.plotting import plot_wigner_grid, set_plot_style
+from gkp_optimal_control.sequences import build_sequence
+from gkp_optimal_control.states import (
+    cat_states,
+    coherent_state_vectors,
+    fock_state,
+    gkp_states,
+    squeezed_vacuum,
+)
 
 GKP_ALPHA = np.sqrt(np.pi / 2)
 GKP_BETA = 1j * np.sqrt(np.pi / 2)
@@ -91,7 +100,7 @@ def parse_state(spec: str, n_fock: int, gkp_delta: float, gkp_cutoff: int) -> np
         state = fock_state(n_fock, int(args[0]))
     elif kind == "coherent":
         expect(1)
-        state = jqt.coherent(n_fock, complex(args[0]))
+        state = coherent_state_vectors(n_fock, jnp.asarray([complex(args[0])]))[0]
     elif kind == "gkp":
         expect(1)
         if args[0] not in ("0", "1"):
@@ -113,7 +122,7 @@ def parse_state(spec: str, n_fock: int, gkp_delta: float, gkp_cutoff: int) -> np
             "cat:even|odd:ALPHA, sqvac:R[:PHI] or file:PATH"
         )
 
-    ket = np.asarray(getattr(state, "data", state), dtype=complex).reshape(-1)
+    ket = np.asarray(state, dtype=complex).reshape(-1)
     if ket.size != n_fock:
         raise ValueError(f"state {spec!r} has dimension {ket.size}, expected n_fock={n_fock}")
     norm = np.linalg.norm(ket)
@@ -151,6 +160,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     opt.add_argument("--no-polish", action="store_true", help="skip the L-BFGS-B polish")
     opt.add_argument("--polish-maxiter", type=int, default=500, help="polish steps (default: 500)")
+    opt.add_argument(
+        "--target-fidelity", type=float, help="stop the Adam stage once a seed reaches this"
+    )
+    opt.add_argument(
+        "--prune-every",
+        type=int,
+        metavar="N",
+        help="every N Adam steps keep only the better half of the seeds",
+    )
 
     bounds = parser.add_argument_group("bounds (soft penalties)")
     bounds.add_argument("--max-disp", type=float, help="cap on |beta| (ecd) or |alpha| (snap)")
@@ -167,9 +185,14 @@ def build_parser() -> argparse.ArgumentParser:
     ansatz.add_argument("--n-leak", type=int, help="top Fock levels counted as leakage")
 
     out = parser.add_argument_group("output")
-    out.add_argument("--out-dir", type=Path, help="default: results/<gate-set>")
-    out.add_argument("--name", help="file name; default: <gate-set>_g<n>_fid<F>.json")
-    out.add_argument("--overwrite", action="store_true", help="replace an existing file")
+    out.add_argument(
+        "--out-dir",
+        type=Path,
+        default=DEFAULT_ROOT,
+        help=f"results root; runs go to <root>/<target>/<gate-set>/ (default: {DEFAULT_ROOT})",
+    )
+    out.add_argument("--name", help="file name; default: n<depth>_<timestamp>")
+    out.add_argument("--overwrite", action="store_true", help="replace an existing --name")
     out.add_argument("--no-save", action="store_true", help="print the summary only")
     out.add_argument("--quiet", action="store_true", help="suppress optimizer progress")
 
@@ -184,6 +207,9 @@ def build_parser() -> argparse.ArgumentParser:
     plot.add_argument("--no-plot", action="store_true", help="do not open the plot window")
     plot.add_argument(
         "--wigner-bound", type=float, default=5.0, help="phase-space half-width (default: 5)"
+    )
+    plot.add_argument(
+        "--plot-cols", type=int, metavar="N", help="panels per row (default: automatic, at most 6)"
     )
     return parser
 
@@ -211,30 +237,35 @@ def gate_snapshots(result, psi_init) -> tuple[list[str], list[np.ndarray]]:
     return ["input", *(f"{name} {i}" for i in range(1, n_gates + 1))], states
 
 
-def plot_gate_wigners(result, psi_init, psi_targ, bound: float):
-    """Row of Wigner functions along the optimized circuit; returns the figure."""
+def plot_gate_wigners(result, psi_init, psi_targ, bound: float, n_cols: int | None = None):
+    """Grid of Wigner functions along the optimized circuit; returns the figure.
+
+    One panel per gate, each annotated with its fidelity to the target, and a
+    strip underneath showing that fidelity along the sequence.
+    """
     labels, states = gate_snapshots(result, psi_init)
+    # <t|psi> for kets, <t|rho|t> for the traced-out density matrices.
+    fidelities = [
+        float(
+            abs(np.vdot(psi_targ, s)) ** 2
+            if s.ndim == 1
+            else np.real(psi_targ.conj() @ s @ psi_targ)
+        )
+        for s in map(np.asarray, states)
+    ]
     set_plot_style()
-    axes = plot_wigner_snapshots(
+    return plot_wigner_grid(
         states,
         psi_targ,
         bound,
         bound,
-        n_snapshots=len(states),
-        title=f"{result.gate_set.upper()}, {result.n_gates} gates, $F = {result.fidelity:.4f}$",
         labels=labels,
+        annotations=[f"$F = {f:.3f}$" for f in fidelities],
+        curve=fidelities,
+        curve_label="Fidelity to target",
+        n_cols=n_cols,
+        title=f"{result.gate_set.upper()}, {result.n_gates} gates, $F = {result.fidelity:.4f}$",
     )
-    return axes[0].figure
-
-
-def _unused_path(path: Path) -> Path:
-    """``path`` itself, or the first ``<stem>_<k>`` variant that does not exist."""
-    path = path.with_suffix(".json")
-    candidate, k = path, 1
-    while candidate.exists():
-        candidate = path.with_name(f"{path.stem}_{k}.json")
-        k += 1
-    return candidate
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -246,11 +277,13 @@ def main(argv: list[str] | None = None) -> int:
             option = "--no-echo" if flag == "echoed" else f"--{flag.replace('_', '-')}"
             parser.error(f"{option} only applies to --gate-set {'/'.join(gate_sets)}")
 
-    out_dir = args.out_dir or Path("results") / args.gate_set
-    if args.name and not args.no_save and not args.overwrite:
-        named = (out_dir / args.name).with_suffix(".json")
-        if named.exists():  # fail before spending the optimization
-            parser.error(f"{named} exists; pass --overwrite or choose another --name")
+    # With --name the destination is known up front; otherwise it is timestamped.
+    path = None
+    if args.name:
+        path = gate_result_path(args.out_dir, args.gate_set, args.n_gates, args.target, args.name)
+        if path.exists() and not args.no_save and not args.overwrite:
+            # fail before spending the optimization
+            parser.error(f"{path} exists; pass --overwrite or choose another --name")
 
     try:
         psi_init = parse_state(args.init, args.n_fock, args.gkp_delta, args.gkp_cutoff)
@@ -278,36 +311,37 @@ def main(argv: list[str] | None = None) -> int:
             polish=not args.no_polish,
             polish_maxiter=args.polish_maxiter,
             seed=args.seed,
+            target_fidelity=args.target_fidelity,
+            prune_every=args.prune_every,
         ),
+        init_label=args.init,
+        target_label=args.target,
         verbose=not args.quiet,
     )
     print(result.summary())
 
-    if args.name:
-        path = (out_dir / args.name).with_suffix(".json")
-    else:
-        path = gate_result_path(out_dir, args.gate_set, args.n_gates, result.fidelity)
-        if not args.overwrite and not args.no_save:
-            path = _unused_path(path)
     if not args.no_save:
-        saved = save_gate_result(
+        path = save_gate_result(
             result,
             path,
+            root=args.out_dir,
             overwrite=args.overwrite,
-            init=args.init,
-            target=args.target,
-            target_state=psi_targ,
             gkp_delta=args.gkp_delta,
             gkp_cutoff=args.gkp_cutoff,
             command=" ".join(["optimize_gates.py", *(sys.argv[1:] if argv is None else argv)]),
         )
-        print(f"saved           : {saved}")
+        print(f"saved           : {path}  (+ .npz)")
+    elif path is None:  # where it would have gone, for a plot saved next to it
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        path = gate_result_path(
+            args.out_dir, args.gate_set, args.n_gates, args.target, f"n{args.n_gates:02d}_{stamp}"
+        )
 
     if args.no_plot and not args.save_plot:
         return 0
     if args.no_plot:
         plt.switch_backend("Agg")
-    fig = plot_gate_wigners(result, psi_init, psi_targ, args.wigner_bound)
+    fig = plot_gate_wigners(result, psi_init, psi_targ, args.wigner_bound, args.plot_cols)
     if args.save_plot:
         png = path.with_suffix(".png") if args.save_plot is True else Path(args.save_plot)
         png = png.expanduser().with_suffix(".png")

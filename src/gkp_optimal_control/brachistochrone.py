@@ -1,13 +1,12 @@
-from functools import partial
-
 import jax
 import jax.numpy as jnp
 
+from .utils import StateLike, to_ket
 
-@partial(jax.jit, static_argnames=())
+
 def quantum_brachistochrone_hamiltonian(
-    initial_state: jnp.ndarray,
-    final_state: jnp.ndarray,
+    initial_state: StateLike,
+    final_state: StateLike,
     energy_bound: float = 1.0,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     r"""Return the time-optimal Hamiltonian driving one state into another.
@@ -21,10 +20,10 @@ def quantum_brachistochrone_hamiltonian(
 
     Parameters
     ----------
-    initial_state : jnp.ndarray
-        Normalized initial ket :math:`|\psi_i\rangle`, shape ``(dim,)``.
-    final_state : jnp.ndarray
-        Normalized target ket :math:`|\psi_f\rangle`, shape ``(dim,)``.
+    initial_state : array_like or jaxquantum.Qarray
+        Initial ket :math:`|\psi_i\rangle`; any ket shape, normalized on entry.
+    final_state : array_like or jaxquantum.Qarray
+        Target ket :math:`|\psi_f\rangle`; any ket shape, normalized on entry.
         Must not be orthogonal to ``initial_state``.
     energy_bound : float, default 1.0
         Spectral-norm bound on the Hamiltonian, :math:`\lVert H \rVert`.
@@ -43,6 +42,11 @@ def quantum_brachistochrone_hamiltonian(
     ----------
     Yang and Del Campo
     """
+    return _brachistochrone(to_ket(initial_state), to_ket(final_state), energy_bound)
+
+
+@jax.jit
+def _brachistochrone(initial_state, final_state, energy_bound):
     # Overlap <psi_i | psi_f> as a complex scalar.
     # jnp.vdot conjugates the first argument, matching the bra-ket convention.
     overlap = jnp.vdot(initial_state, final_state)

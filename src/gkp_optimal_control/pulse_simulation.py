@@ -52,7 +52,7 @@ from jax.scipy.linalg import expm
 from . import pulses as _pulses
 from .device import SystemParams
 from .operators import annihilation, displacement, joint_operators
-from .utils import wigner_trajectory
+from .utils import to_ket, wigner_trajectory
 
 PulseSequence = _pulses.PulseSequence
 
@@ -337,7 +337,7 @@ class SimResult:
                 "co-moving frame instead, or displace the target state.",
                 stacklevel=2,
             )
-        d = np.asarray(_displace_np(self.n_fock, alpha_t))
+        d = np.asarray(displacement(self.n_fock, alpha_t))
         if project == "traced":
             return d @ psi @ d.conj().T
         return d @ psi
@@ -348,16 +348,11 @@ class SimResult:
         With ``project="ground"`` this is the paper's definition: the cavity
         state after projecting the transmon onto :math:`|g\rangle`.
         """
-        target = np.asarray(psi_target, dtype=complex).reshape(-1)
-        target = target / np.linalg.norm(target)
+        target = np.asarray(to_ket(psi_target))
         state = self.final_cavity_state(project=project, apply_frame=apply_frame)
         if project == "traced":
             return float(np.real(np.conj(target) @ state @ target))
         return float(abs(np.vdot(target, state)) ** 2)
-
-
-def _displace_np(n_fock: int, alpha: complex) -> np.ndarray:
-    return np.asarray(displacement(n_fock, alpha))
 
 
 # ---------------------------------------------------------------------------
@@ -395,8 +390,8 @@ def check_compile_convention(result, params, psi_target, n_fock, fid_tol=5e-3, *
     p_lin = params.replace(kappa=0.0, chi_prime=0.0, kerr=0.0)
     seq = _pulses.compile_from_result(result, params=p_lin, **compile_kw)
     r = simulate_sequence(seq, n_fock=n_fock, save_every=10**9)
-    target = np.asarray(psi_target, dtype=complex).reshape(-1)
-    pt = _displace_np(n_fock, -r.alpha[-1]) @ target
+    target = np.asarray(to_ket(psi_target, normalize=False))
+    pt = np.asarray(displacement(n_fock, -r.alpha[-1])) @ target
     F = float(abs(np.vdot(pt, r.blocks()[-1, 0])) ** 2)
     if abs(F - result.fidelity) >= fid_tol:
         raise AssertionError(
@@ -462,7 +457,9 @@ def simulate_sequence(
         blocks[0, 0] = 1.0
         psi_init = np.swapaxes(blocks, 0, 1).reshape(-1)
     else:
-        arr = np.asarray(psi0, dtype=complex)
+        arr = np.asarray(getattr(psi0, "data", psi0), dtype=complex)
+        if arr.ndim == 2 and arr.shape[1] == 1:  # column ket
+            arr = arr[:, 0]
         if arr.ndim == 2 and arr.shape == (n_transmon, n_fock):
             psi_init = np.swapaxes(arr, 0, 1).reshape(-1)
         elif arr.size == dim:

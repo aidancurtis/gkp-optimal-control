@@ -10,7 +10,7 @@ Two gate sets are compiled.
 
 **ECD + qubit rotations.** Each :math:`\mathrm{ECD}(\beta)` is realized by four
 Gaussian cavity displacements with a qubit :math:`\pi` pulse at the midpoint
-(Fig. S3a). The four amplitude ratios are found by Nelder-Mead on the cost
+(Fig. S3a). The four amplitude ratios are found by least squares on the cost
 function (S27) evaluated along *semiclassical* phase-space trajectories (S5),
 so second-order dispersive shift, Kerr and photon loss all enter the
 compilation. The wait time :math:`t_w` is then reduced until the target
@@ -77,7 +77,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import lax
-from scipy.optimize import minimize
+from scipy.optimize import least_squares
 
 from .device import TWO_PI, SystemParams
 
@@ -167,8 +167,7 @@ def _alpha_rhs(alpha, eps, q, p: SystemParams, delta: float):
     )
 
 
-@jax.jit
-def _rk4_trajectory(drive, excitation, alpha0, dt, delta, kerr, kappa, chi, chi_prime):
+def _rk4_core(drive, excitation, alpha0, dt, delta, kerr, kappa, chi, chi_prime):
     """RK4 over pre-interpolated ``(left, mid, right)`` samples of the drive and excitation."""
 
     def rhs(alpha, eps, q):
@@ -189,6 +188,28 @@ def _rk4_trajectory(drive, excitation, alpha0, dt, delta, kerr, kappa, chi, chi_
     return jnp.concatenate([alpha0[None], traj])
 
 
+_rk4_trajectory = jax.jit(_rk4_core)
+
+
+def _coarsen(x: np.ndarray, stride: int) -> np.ndarray:
+    """Block-average the leading (time) axis by ``stride``, so pulse areas are preserved."""
+    if stride <= 1:
+        return x
+    n_blk = x.shape[0] // stride
+    return x[: n_blk * stride].reshape(n_blk, stride, *x.shape[1:]).mean(axis=1)
+
+
+def _step_samples(x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Left, midpoint and right samples of each step along axis 0; endpoints held.
+
+    Zero-padded to a multiple of ``_TRAJECTORY_BUCKET`` steps so the jitted
+    integrators are compiled for few shapes.
+    """
+    right = np.concatenate([x[1:], x[-1:]])
+    pad = [(0, -x.shape[0] % _TRAJECTORY_BUCKET)] + [(0, 0)] * (x.ndim - 1)
+    return tuple(np.pad(a, pad) for a in (x, 0.5 * (x + right), right))
+
+
 def _integrate_alpha(eps, q_of_t, p: SystemParams, delta: float, alpha0=0.0j, stride: int = 1):
     """RK4-integrate Eq. (S5) on the waveform grid, vectorized over branches.
 
@@ -203,8 +224,8 @@ def _integrate_alpha(eps, q_of_t, p: SystemParams, delta: float, alpha0=0.0j, st
         Initial condition, broadcast against the branch axis.
     stride : int
         Integrate on a grid coarsened by this factor, block-averaging the
-        drive so pulse areas are preserved. Used to speed up the inner
-        Nelder-Mead of the ECD compiler; final trajectories use ``stride=1``.
+        drive so pulse areas are preserved. Used to speed up the root find of
+        the ECD compiler; final trajectories use ``stride=1``.
 
     Returns
     -------
@@ -218,28 +239,14 @@ def _integrate_alpha(eps, q_of_t, p: SystemParams, delta: float, alpha0=0.0j, st
     squeeze = q_of_t.ndim == 1
     if squeeze:
         q_of_t = q_of_t[:, None]
-
-    stride = int(stride)
-    if stride > 1:
-        # Block-average rather than decimate, so pulse areas are preserved.
-        n_blk = eps.size // stride
-        keep = n_blk * stride
-        eps = eps[:keep].reshape(n_blk, stride).mean(axis=1)
-        q_of_t = q_of_t[:keep].reshape(n_blk, stride, -1).mean(axis=1)
+    eps, q_of_t = _coarsen(eps, int(stride)), _coarsen(q_of_t, int(stride))
     n, m = eps.size, q_of_t.shape[1]
 
-    def interpolate(x):
-        """Left, midpoint and right samples of each step; endpoints held."""
-        right = np.concatenate([x[1:], x[-1:]])
-        # Pad to a coarse length grid so the jitted scan is compiled for few shapes.
-        pad = [(0, -n % _TRAJECTORY_BUCKET)] + [(0, 0)] * (x.ndim - 1)
-        return tuple(np.pad(a, pad) for a in (x, 0.5 * (x + right), right))
-
     traj = _rk4_trajectory(
-        tuple(a[:, None] for a in interpolate(eps)),
-        interpolate(q_of_t),
+        tuple(a[:, None] for a in _step_samples(eps)),
+        _step_samples(q_of_t),
         np.broadcast_to(np.asarray(alpha0, dtype=complex), (m,)),
-        p.dt * stride, delta, p.kerr, p.kappa, p.chi, p.chi_prime,
+        p.dt * int(stride), delta, p.kerr, p.kappa, p.chi, p.chi_prime,
     )  # fmt: skip
     traj = np.asarray(traj)[: n + 1]
     return traj[:, 0] if squeeze else traj
@@ -396,45 +403,83 @@ def _ecd_markers(g_size: int, n_wait: int, n_q: int):
     return i_quarter, i_mid, i_three_quarter, i_end
 
 
-def _ecd_cost(x, t_wait, alpha0, params: SystemParams, delta: float, stride: int = 1):
-    """Cost function (S27): null net displacement, hit radius ``alpha0``."""
-    eps, _, q_g = _ecd_waveforms(x, t_wait, params)
-    a_g, a_e = branch_trajectories(eps, q_g, params, delta, stride=stride)
-    g, _ = _gauss_cached(
-        params.sigma_disp, params.n_sigma_disp, params.dt, params.subtract_pedestal
+def _ecd_residuals(x, bases, excitation, markers, radius, dt, delta, kerr, kappa, chi, chi_prime):
+    """Residuals of the cost function (S27): null net displacement, hit radius ``alpha0``.
+
+    Their sum of squares is the cost. ``bases`` holds the four displacement
+    envelopes of the gate as step samples, so the drive is linear in the
+    amplitudes ``[eps0, -eps0 r2, -eps0 r3, eps0 r4]``.
+    """
+    eps0, r2, r3, r4 = x
+    coeffs = eps0 * jnp.stack([jnp.ones_like(r2), -r2, -r3, r4])
+    drive = tuple((coeffs @ b).astype(jnp.complex128)[:, None] for b in bases)
+    traj = _rk4_core(
+        drive, excitation, jnp.zeros(2, jnp.complex128), dt, delta, kerr, kappa, chi, chi_prime
     )
-    gq, _ = _gauss_cached(
-        params.sigma_qubit, params.n_sigma_qubit, params.dt, params.subtract_pedestal
+    total = traj[:, 0] + traj[:, 1]  # alpha_g + alpha_e
+    i_quarter, i_mid, i_three_quarter, i_end = markers
+    return jnp.stack(
+        [
+            total[i_mid].real,
+            total[i_mid].imag,
+            total[i_end].real,
+            total[i_end].imag,
+            0.5 * jnp.abs(total[i_quarter]) - radius,
+            0.5 * jnp.abs(total[i_three_quarter]) - radius,
+        ]
+    )
+
+
+_ecd_residuals_jit = jax.jit(_ecd_residuals)
+_ecd_jacobian_jit = jax.jit(jax.jacfwd(_ecd_residuals))
+
+
+def _solve_ratios(t_wait, alpha0, params: SystemParams, delta: float, x0=None, stride: int = 1):
+    """Least-squares solve for ``[eps0, r2, r3, r4]`` at fixed ``t_wait`` and radius.
+
+    Levenberg-Marquardt on the residuals of :func:`_ecd_residuals` with their
+    exact Jacobian. Returns the solution and the cost (S27) at it.
+    """
+    g, area = _gauss_cached(
+        params.sigma_disp, params.n_sigma_disp, params.dt, params.subtract_pedestal
     )
     n_wait = int(round(t_wait / params.dt))
-    i_q, i_m, i_3q, i_e = _ecd_markers(g.size, n_wait, gq.size)
-    if stride > 1:
-        i_q, i_m, i_3q = i_q // stride, i_m // stride, i_3q // stride
-        i_e = a_g.size - 1
-    return (
-        abs(a_g[i_m] + a_e[i_m]) ** 2
-        + abs(a_g[i_e] + a_e[i_e]) ** 2
-        + (0.5 * abs(a_g[i_q] + a_e[i_q]) - alpha0) ** 2
-        + (0.5 * abs(a_g[i_3q] + a_e[i_3q]) - alpha0) ** 2
-    )
+    n_q = int(round(params.n_sigma_qubit * params.sigma_qubit / params.dt))
+    _, _, q_g = _ecd_waveforms(np.zeros(4), t_wait, params)
 
+    # The four displacement envelopes, each in its own slot of the gate.
+    bases = np.zeros((q_g.size, 4))
+    for k, start in enumerate(
+        (0, g.size + n_wait, 2 * g.size + n_wait + n_q, 3 * g.size + 2 * n_wait + n_q)
+    ):
+        bases[start : start + g.size, k] = g
+    bases = _coarsen(bases, stride)
+    excitation = _coarsen(np.stack([q_g, 1.0 - q_g], axis=1), stride)
 
-def _solve_ratios(t_wait, alpha0, params: SystemParams, delta: float, x0=None, maxiter=2000,
-                  xatol=1e-9, fatol=1e-13, stride: int = 1):
-    """Nelder-Mead on ``[eps0, r2, r3, r4]`` at fixed ``t_wait`` and radius."""
-    _, area = _gauss_cached(
-        params.sigma_disp, params.n_sigma_disp, params.dt, params.subtract_pedestal
-    )
+    i_q, i_m, i_3q, i_e = _ecd_markers(g.size, n_wait, n_q)
+    markers = (i_q // stride, i_m // stride, i_3q // stride, bases.shape[0] if stride > 1 else i_e)
+    args = (
+        tuple(b.T for b in _step_samples(bases)),
+        _step_samples(excitation),
+        np.asarray(markers),
+        float(alpha0),
+        params.dt * stride, delta, params.kerr, params.kappa, params.chi, params.chi_prime,
+    )  # fmt: skip
+
     if x0 is None:
         x0 = np.array([alpha0 / area, 1.0, 1.0, 1.0])
-    res = minimize(
-        _ecd_cost,
-        x0,
-        args=(t_wait, alpha0, params, delta, stride),
-        method="Nelder-Mead",
-        options={"maxiter": maxiter, "xatol": xatol, "fatol": fatol},
+    res = least_squares(
+        lambda x: np.asarray(_ecd_residuals_jit(x, *args)),
+        np.asarray(x0, dtype=float),
+        jac=lambda x: np.asarray(_ecd_jacobian_jit(x, *args)),
+        method="lm",
+        x_scale="jac",
+        xtol=1e-14,
+        ftol=1e-14,
+        gtol=1e-14,
+        max_nfev=200,
     )
-    return res.x, float(res.fun)
+    return res.x, float(2.0 * res.cost)
 
 
 def _build_ecd(x, t_wait, alpha0, cost, params, delta, pi_phase=0.0) -> ECDPulse:
@@ -507,14 +552,12 @@ def optimize_ecd_pulse(
 
     state = {"x": None, "radius": float(alpha0)}
 
-    def solve(t_wait, radius, stride_, maxiter):
+    def solve(t_wait, radius, stride_):
         x0 = state["x"]
         if x0 is not None:
             x0 = np.asarray(x0, dtype=float).copy()
             x0[0] *= radius / max(state["radius"], 1e-12)
-        x, cost = _solve_ratios(
-            t_wait, radius, params, delta, x0=x0, maxiter=maxiter, stride=stride_
-        )
+        x, cost = _solve_ratios(t_wait, radius, params, delta, x0=x0, stride=stride_)
         state["x"], state["radius"] = x, radius
         return _build_ecd(x, t_wait, radius, cost, params, delta)
 
@@ -524,12 +567,12 @@ def optimize_ecd_pulse(
     arg = np.clip(target / (2.0 * radius), 0.0, 0.99)
     t_wait_hi = max(0.5 * (2.0 * np.arcsin(arg) / params.chi - t_pulses), 10.0 * params.dt)
 
-    pulse_hi = solve(t_wait_hi, radius, stride, 2000)
+    pulse_hi = solve(t_wait_hi, radius, stride)
     for _ in range(20):
         if abs(pulse_hi.beta) >= target:
             break
         t_wait_hi *= 2.0
-        pulse_hi = solve(t_wait_hi, radius, stride, 600)
+        pulse_hi = solve(t_wait_hi, radius, stride)
     if abs(pulse_hi.beta) < target:
         raise RuntimeError(
             f"cannot reach |beta| = {target:.3f} at alpha0 = {radius:.1f}: best "
@@ -537,12 +580,12 @@ def optimize_ecd_pulse(
             "Increase alpha0, or check that chi has the right units (rad/us)."
         )
 
-    pulse_lo = solve(0.0, radius, stride, 600)
+    pulse_lo = solve(0.0, radius, stride)
 
     if abs(pulse_lo.beta) > target:
         # --- drive-constrained: t_w = 0 and shrink the radius
         best = _bisect(
-            lambda r: solve(0.0, r, stride, 400),
+            lambda r: solve(0.0, r, stride),
             lambda pl: pl.alpha0,
             0.0,
             radius,
@@ -557,7 +600,7 @@ def optimize_ecd_pulse(
 
     # --- shorten the wait time until |beta| lands on the target
     best = _bisect(
-        lambda tw: solve(tw, radius, stride, 400),
+        lambda tw: solve(tw, radius, stride),
         lambda pl: pl.t_wait,
         0.0,
         t_wait_hi,
@@ -609,12 +652,10 @@ def _refine(
     """
     dt = params.dt
 
-    def solve(t_wait, radius, stride_, maxiter=600):
+    def solve(t_wait, radius, stride_):
         x0 = np.asarray(state["x"], dtype=float).copy()
         x0[0] *= radius / max(state["radius"], 1e-12)
-        x, cost = _solve_ratios(
-            t_wait, radius, params, delta, x0=x0, maxiter=maxiter, stride=stride_
-        )
+        x, cost = _solve_ratios(t_wait, radius, params, delta, x0=x0, stride=stride_)
         state["x"], state["radius"] = x, radius
         return _build_ecd(x, t_wait, radius, cost, params, delta)
 

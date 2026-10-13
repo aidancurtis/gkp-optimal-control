@@ -5,6 +5,8 @@ from typing import cast
 import diffrax
 import jax.numpy as jnp
 
+from .utils import to_ket
+
 warnings.filterwarnings(
     "ignore",
     message="Complex dtype support in Diffrax",
@@ -52,8 +54,8 @@ def evolve(
 
     Parameters
     ----------
-    psi0 : jnp.ndarray
-        Initial ket of shape ``(dim,)``.
+    psi0 : array_like or jaxquantum.Qarray
+        Initial ket, any ket shape; not renormalized.
     h_drift : jnp.ndarray
         Time-independent drift Hamiltonian, shape ``(dim, dim)``.
     h_controls : jnp.ndarray
@@ -105,7 +107,7 @@ def evolve(
         t0=t0,
         t1=t1,
         dt0=dt0,
-        y0=psi0,
+        y0=to_ket(psi0, normalize=False),
         saveat=saveat_obj,
         stepsize_controller=controller,
         max_steps=max_steps,
