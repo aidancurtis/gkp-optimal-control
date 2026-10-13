@@ -22,11 +22,8 @@ selective qubit :math:`\pi` pulses whose relative phase per Fock level sets the
 imparted phase, following Heeres et al., *PRL* **115**, 137002 (2015). The
 displacements are the same fast unselective Gaussians used by the ECD set.
 
-Units
------
-Time is in microseconds throughout; all rates and drive amplitudes are angular
-frequencies in rad/us. A drive quoted in Hz is converted with a factor
-:math:`2\pi`, e.g. ``chi = 2 * np.pi * 32.8e-3`` for 32.8 kHz.
+Device parameters and units (microseconds, rad/us) are defined in
+:mod:`device`.
 
 Conventions
 -----------
@@ -65,27 +62,26 @@ The sign convention for the realized conditional displacement,
 
 matches Eq. (S25), :math:`\mathrm{CD}(\beta) = D(\beta/2)|g\rangle\langle g| +
 D(-\beta/2)|e\rangle\langle e|`, and therefore
-:func:`gate_optimization._build_ecd_sequence`. (Section S4 B of the supplement
+:func:`gate_optimization.ecd_sequence`. (Section S4 B of the supplement
 states the opposite sign; Eq. (S25) and the main text agree with the choice
-made here, and :func:`verify_ecd_pulse` checks it numerically.)
+made here.)
 """
 
 from __future__ import annotations
 
-import json
-import os
-import re
 import warnings
+from dataclasses import dataclass, field
 from functools import lru_cache
-from dataclasses import asdict, dataclass, field, replace
 
+import jax
+import jax.numpy as jnp
 import numpy as np
+from jax import lax
 from scipy.optimize import minimize
 
+from .device import TWO_PI, SystemParams
+
 __all__ = [
-    "SystemParams",
-    "load_config",
-    "parse_quantity",
     "PulseSegment",
     "PulseSequence",
     "ECDPulse",
@@ -99,463 +95,6 @@ __all__ = [
     "compile_from_result",
     "ecd_pulse_cache",
 ]
-
-TWO_PI = 2.0 * np.pi
-
-
-# ---------------------------------------------------------------------------
-# Units and configuration files
-# ---------------------------------------------------------------------------
-
-# Internal units are microseconds and rad/us. Config files may instead give a
-# string with an explicit unit, which is both safer and self-documenting: the
-# factor of 2 pi between a quoted frequency and an angular frequency is the
-# single most common source of silent 6x errors in this kind of code.
-
-#: multiplier from <unit> to rad/us, for quantities stored as angular frequencies
-_FREQUENCY_UNITS = {
-    "Hz": TWO_PI * 1e-6,
-    "kHz": TWO_PI * 1e-3,
-    "MHz": TWO_PI,
-    "GHz": TWO_PI * 1e3,
-    "rad/s": 1e-6,
-    "rad/ms": 1e-3,
-    "rad/us": 1.0,
-    "rad/ns": 1e3,
-}
-
-#: multiplier from <unit> to us
-_TIME_UNITS = {"s": 1e6, "ms": 1e3, "us": 1.0, "ns": 1e-3, "ps": 1e-6}
-
-#: multiplier from <unit> to 1/us, for quantities stored as ordinary rates
-_RATE_UNITS = {
-    "Hz": 1e-6,
-    "kHz": 1e-3,
-    "MHz": 1.0,
-    "GHz": 1e3,
-    "1/s": 1e-6,
-    "1/ms": 1e-3,
-    "1/us": 1.0,
-    "1/ns": 1e3,
-}
-
-_KIND_TABLES = {
-    "frequency": _FREQUENCY_UNITS,
-    "time": _TIME_UNITS,
-    "rate": _RATE_UNITS,
-}
-
-_QUANTITY_RE = re.compile(
-    r"^\s*([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)\s*(.*?)\s*$"
-)
-
-# micro sign and Greek mu both spelled as "u" internally
-_MU_TRANSLATION = {ord("\u00b5"): "u", ord("\u03bc"): "u"}
-
-
-def parse_quantity(value, kind: str) -> float:
-    r"""Convert a config entry to internal units (us, rad/us, 1/us).
-
-    Parameters
-    ----------
-    value : float or str
-        A bare number is taken to be already in internal units. A string must
-        carry a unit, e.g. ``"32.8 kHz"``, ``"11 ns"``, ``"1/436 us"`` is *not*
-        accepted -- invert a time with the ``t1_cavity`` alias instead.
-    kind : {"frequency", "time", "rate"}
-        ``"frequency"`` multiplies by :math:`2\pi`, since those quantities are
-        stored as angular frequencies; ``"rate"`` does not.
-
-    Examples
-    --------
-    >>> abs(parse_quantity("32.8 kHz", "frequency") - 2 * np.pi * 32.8e-3) < 1e-12
-    True
-    >>> parse_quantity("11 ns", "time")
-    0.011
-    """
-    if isinstance(value, bool):
-        raise TypeError(f"expected a number or a quantity string, got {value!r}")
-    if isinstance(value, (int, float)):
-        return float(value)
-    if not isinstance(value, str):
-        raise TypeError(f"expected a number or a quantity string, got {value!r}")
-
-    table = _KIND_TABLES.get(kind)
-    if table is None:
-        raise ValueError(f"unknown quantity kind {kind!r}")
-
-    text = value.translate(_MU_TRANSLATION)
-    match = _QUANTITY_RE.match(text)
-    if match is None:
-        raise ValueError(f"cannot parse quantity {value!r}")
-    number, unit = match.group(1), match.group(2)
-    if not unit:
-        raise ValueError(
-            f"quantity {value!r} has no unit; give one of "
-            f"{sorted(table)} or pass a bare number in internal units "
-            f"({'rad/us' if kind == 'frequency' else 'us' if kind == 'time' else '1/us'})"
-        )
-    # case-insensitive match, but prefer the exact spelling
-    if unit not in table:
-        lowered = {u.lower(): u for u in table}
-        if unit.lower() not in lowered:
-            raise ValueError(
-                f"unknown {kind} unit {unit!r} in {value!r}; expected one of {sorted(table)}"
-            )
-        unit = lowered[unit.lower()]
-    return float(number) * table[unit]
-
-
-#: field -> quantity kind, for fields that carry units
-_FIELD_KINDS = {
-    "chi": "frequency",
-    "chi_prime": "frequency",
-    "kerr": "frequency",
-    "anharm": "frequency",
-    "eps_max": "frequency",
-    "omega_max": "frequency",
-    "kappa": "rate",
-    "dt": "time",
-    "sigma_disp": "time",
-    "sigma_qubit": "time",
-}
-
-#: field -> python type, for dimensionless fields
-_FIELD_PLAIN = {
-    "n_sigma_disp": int,
-    "n_sigma_qubit": int,
-    "n_selective_periods": int,
-    "subtract_pedestal": bool,
-}
-
-#: alias -> (canonical field, transform applied after unit conversion)
-_FIELD_ALIASES = {
-    "chi_2": ("chi_prime", None),
-    "chi2": ("chi_prime", None),
-    "k_c": ("kerr", None),
-    "kerr_c": ("kerr", None),
-    "two_kerr": ("kerr", lambda v: 0.5 * v),  # Table S1 quotes 2 K_c
-    "k_q": ("anharm", None),
-    "anharmonicity": ("anharm", None),
-    "t1_cavity": ("kappa", None),
-    "cavity_t1": ("kappa", None),
-    "t1": ("kappa", None),
-    "sample_period": ("dt", None),
-}
-
-#: aliases whose value is a *time* to be inverted into a rate
-_INVERTED_TIME_ALIASES = {"t1_cavity", "cavity_t1", "t1"}
-
-
-def _canonical_field(key: str):
-    """Resolve a config key to ``(field, kind, transform)``."""
-    k = key.strip().lower()
-    if k in _FIELD_KINDS:
-        return k, _FIELD_KINDS[k], None
-    if k in _FIELD_PLAIN:
-        return k, "plain", None
-    if k in _FIELD_ALIASES:
-        field, transform = _FIELD_ALIASES[k]
-        if k in _INVERTED_TIME_ALIASES:
-            return field, "inverse_time", transform
-        kind = _FIELD_KINDS.get(field, "plain")
-        return field, kind, transform
-    valid = sorted(set(_FIELD_KINDS) | set(_FIELD_PLAIN) | set(_FIELD_ALIASES))
-    raise ValueError(f"unknown parameter {key!r}; expected one of {valid}")
-
-
-def _load_raw(path: str) -> dict:
-    """Read a JSON, YAML or TOML file into a dict, dispatching on extension."""
-    ext = os.path.splitext(path)[1].lower()
-    if ext == ".json":
-        with open(path) as fh:
-            return json.load(fh)
-    if ext == ".toml":
-        try:
-            import tomllib
-        except ImportError as exc:  # pragma: no cover
-            raise ImportError("reading .toml needs Python 3.11+ or the tomli package") from exc
-        with open(path, "rb") as fh:
-            return tomllib.load(fh)
-    if ext in (".yaml", ".yml"):
-        try:
-            import yaml
-        except ImportError as exc:  # pragma: no cover
-            raise ImportError("reading .yaml needs PyYAML (pip install pyyaml)") from exc
-        with open(path) as fh:
-            return yaml.safe_load(fh)
-    raise ValueError(
-        f"unsupported config extension {ext!r}; use .json, .toml, .yaml or .yml"
-    )
-
-
-def load_config(path: str, section: str = "system", **overrides):
-    r"""Read a device config file, returning parameters and any extra sections.
-
-    The ``[system]`` section (or the top level, if there is no such section)
-    populates a :class:`SystemParams`. Every other top-level mapping is passed
-    through untouched, which is where compile- and simulation-time settings
-    naturally live.
-
-    Returns
-    -------
-    params : SystemParams
-    extras : dict
-        The remaining top-level sections, e.g. ``extras["ecd"]["alpha0"]``.
-
-    Examples
-    --------
-    A TOML file describing the device of Eickbusch et al.::
-
-        [system]
-        chi         = "32.8 kHz"     # quoted frequencies get the 2 pi
-        chi_prime   = "1.5 Hz"
-        two_kerr    = "1.0 Hz"       # Table S1 quotes 2 K_c
-        t1_cavity   = "436 us"       # inverted into kappa
-        anharm      = "193 MHz"
-        eps_max     = "400 MHz"
-        omega_max   = "20 MHz"
-        dt          = "1 ns"
-        sigma_disp  = "11 ns"
-        sigma_qubit = "6 ns"
-
-        [ecd]
-        alpha0 = 30.0
-        n_fock = 60
-
-    then::
-
-        params, extras = load_config("device.toml")
-        seq = compile_ecd_sequence(betas, thetas, phis, params=params,
-                                   alpha0=extras["ecd"]["alpha0"])
-    """
-    raw = _load_raw(path)
-    if not isinstance(raw, dict):
-        raise ValueError(f"{path} must contain a mapping at the top level")
-    if section in raw:
-        sys_raw = raw[section]
-        extras = {k: v for k, v in raw.items() if k != section}
-    else:
-        # flat file: split the known parameter names off from anything else
-        sys_raw, extras = {}, {}
-        for k, v in raw.items():
-            if isinstance(v, dict):
-                extras[k] = v
-                continue
-            try:
-                _canonical_field(k)
-            except ValueError:
-                extras[k] = v
-            else:
-                sys_raw[k] = v
-    if not isinstance(sys_raw, dict):
-        raise ValueError(f"section [{section}] of {path} must be a mapping")
-    return SystemParams.from_dict(sys_raw, **overrides), extras
-
-
-# ---------------------------------------------------------------------------
-# System parameters
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class SystemParams:
-    r"""Hamiltonian, decoherence and drive-constraint parameters.
-
-    Defaults are Table S1 of Eickbusch et al. Every field is overridable;
-    use :meth:`replace` for one-off edits.
-
-    Parameters
-    ----------
-    chi : float
-        Dispersive shift in rad/us. Table S1: :math:`2\pi \times 32.8` kHz.
-    chi_prime : float
-        Second-order dispersive shift :math:`\chi'`, rad/us.
-        Table S1: :math:`2\pi \times 1.5` Hz.
-    kerr : float
-        Cavity self-Kerr :math:`K_c` in rad/us, in the sign convention
-        :math:`H \supset -K_c a^{\dagger 2} a^2`. Table S1 quotes
-        :math:`2 K_c = 2\pi \times 1` Hz.
-    kappa : float
-        Cavity relaxation rate :math:`1/T_{1,c}`, rad/us. Enters the
-        semiclassical trajectories as the deterministic re-centring force
-        :math:`\kappa/2`; it is *not* a decoherence channel here (the
-        simulation in :mod:`pulse_simulation` is unitary by default).
-    anharm : float
-        Transmon anharmonicity :math:`K = 2 K_q`, rad/us. Only used when the
-        transmon is truncated above two levels.
-    eps_max, omega_max : float
-        Drive-amplitude ceilings in rad/us, used for warnings only.
-    dt : float
-        Waveform sample period in us. 1 ns matches the 1 GS/s DAC of the
-        experiment; coarsen it for SNAP sequences, which are 10^3 times longer.
-    sigma_disp, n_sigma_disp : float, int
-        Gaussian standard deviation and truncation width of the cavity
-        displacement pulses. Table: :math:`\sigma = 11` ns, total 4 sigma.
-    sigma_qubit, n_sigma_qubit : float, int
-        Same for qubit rotation pulses: :math:`\sigma = 6` ns, total 4 sigma.
-    subtract_pedestal : bool
-        Subtract the value of the Gaussian at the truncation point so the
-        waveform starts and ends exactly at zero.
-    n_selective_periods : int
-        Duration of a SNAP selective :math:`\pi` pulse in units of
-        :math:`2\pi/\chi`. One period is *not* enough for a number-multiplexed
-        drive, whose components add coherently at the pulse centre and break
-        the weak-drive approximation; see :func:`snap_waveform`. Must be an
-        integer so that the per-level phase reference is common to both pulses
-        of a SNAP gate.
-    """
-
-    chi: float = TWO_PI * 32.8e-3
-    chi_prime: float = TWO_PI * 1.5e-6
-    kerr: float = TWO_PI * 0.5e-6
-    kappa: float = 1.0 / 436.0
-    anharm: float = TWO_PI * 193.0
-    eps_max: float = TWO_PI * 400.0
-    omega_max: float = TWO_PI * 20.0
-    dt: float = 1e-3
-    sigma_disp: float = 11e-3
-    n_sigma_disp: int = 4
-    sigma_qubit: float = 6e-3
-    n_sigma_qubit: int = 4
-    subtract_pedestal: bool = True
-    n_selective_periods: int = 4
-
-    # -- convenience -----------------------------------------------------
-    @property
-    def t_disp(self) -> float:
-        """Duration of one displacement pulse, us."""
-        return self.n_sigma_disp * self.sigma_disp
-
-    @property
-    def t_qubit(self) -> float:
-        """Duration of one qubit rotation pulse, us."""
-        return self.n_sigma_qubit * self.sigma_qubit
-
-    @property
-    def t_snap_selective(self) -> float:
-        """Duration of one number-selective pi pulse, us."""
-        return self.n_selective_periods * TWO_PI / self.chi
-
-    def replace(self, **kwargs) -> "SystemParams":
-        return replace(self, **kwargs)
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-    # -- configuration --------------------------------------------------
-    @classmethod
-    def from_dict(cls, mapping: dict, strict: bool = True, **overrides) -> "SystemParams":
-        r"""Build parameters from a mapping of possibly unit-carrying entries.
-
-        Keys are canonical field names or the aliases in ``_FIELD_ALIASES``
-        (``two_kerr``, ``t1_cavity``, ``K_q``, ...). Values are either bare
-        numbers in internal units (us, rad/us, 1/us) or strings with an
-        explicit unit, e.g. ``"32.8 kHz"``. Frequencies acquire the factor
-        :math:`2\pi`; rates such as :math:`\kappa` do not.
-
-        Parameters
-        ----------
-        strict : bool
-            Raise on unrecognized keys. Turning this off downgrades them to a
-            warning, which is convenient when a shared device file carries
-            fields this module does not use (qubit :math:`T_2`, readout
-            settings, and so on).
-        **overrides
-            Applied after the mapping, in the same units-aware way, so
-            ``from_dict(cfg, chi="40 kHz")`` works.
-        """
-        fields = {}
-        for key, value in {**mapping, **overrides}.items():
-            try:
-                field_name, kind, transform = _canonical_field(key)
-            except ValueError:
-                if strict:
-                    raise
-                warnings.warn(f"ignoring unrecognized parameter {key!r}", stacklevel=2)
-                continue
-            if kind == "plain":
-                converted = _FIELD_PLAIN[field_name](value)
-            elif kind == "inverse_time":
-                seconds = parse_quantity(value, "time")
-                if seconds <= 0:
-                    raise ValueError(f"{key} must be positive; got {value!r}")
-                converted = 1.0 / seconds
-            else:
-                converted = parse_quantity(value, kind)
-            if transform is not None:
-                converted = transform(converted)
-            fields[field_name] = converted
-        return cls(**fields)
-
-    @classmethod
-    def from_config(cls, path: str, section: str = "system", **overrides) -> "SystemParams":
-        """Read parameters from a JSON, YAML or TOML file.
-
-        Ignores any other sections; use :func:`load_config` to get those too.
-        """
-        params, _ = load_config(path, section=section, **overrides)
-        return params
-
-    def to_config(self, path: str | None = None, section: str = "system") -> dict:
-        """Render the parameters as a config mapping with explicit units.
-
-        Round-trips through :meth:`from_dict`, so it is a convenient way to
-        record the exact parameters a run used. Writes the file when ``path`` is
-        given, dispatching on extension.
-        """
-        body = {
-            "chi": f"{self.chi / TWO_PI * 1e3:.10g} kHz",
-            "chi_prime": f"{self.chi_prime / TWO_PI * 1e6:.10g} Hz",
-            "kerr": f"{self.kerr / TWO_PI * 1e6:.10g} Hz",
-            "t1_cavity": f"{1.0 / self.kappa:.10g} us" if self.kappa > 0 else "inf us",
-            "anharm": f"{self.anharm / TWO_PI:.10g} MHz",
-            "eps_max": f"{self.eps_max / TWO_PI:.10g} MHz",
-            "omega_max": f"{self.omega_max / TWO_PI:.10g} MHz",
-            "dt": f"{self.dt * 1e3:.10g} ns",
-            "sigma_disp": f"{self.sigma_disp * 1e3:.10g} ns",
-            "sigma_qubit": f"{self.sigma_qubit * 1e3:.10g} ns",
-            "n_sigma_disp": int(self.n_sigma_disp),
-            "n_sigma_qubit": int(self.n_sigma_qubit),
-            "n_selective_periods": int(self.n_selective_periods),
-            "subtract_pedestal": bool(self.subtract_pedestal),
-        }
-        out = {section: body}
-        if path is not None:
-            ext = os.path.splitext(path)[1].lower()
-            if ext == ".json":
-                with open(path, "w") as fh:
-                    json.dump(out, fh, indent=2)
-            elif ext in (".yaml", ".yml"):
-                import yaml
-
-                with open(path, "w") as fh:
-                    yaml.safe_dump(out, fh, sort_keys=False)
-            elif ext == ".toml":
-                lines = [f"[{section}]"]
-                for k, v in body.items():
-                    if isinstance(v, bool):
-                        lines.append(f"{k} = {str(v).lower()}")
-                    elif isinstance(v, int):
-                        lines.append(f"{k} = {v}")
-                    else:
-                        lines.append(f'{k} = "{v}"')
-                with open(path, "w") as fh:
-                    fh.write("\n".join(lines) + "\n")
-            else:
-                raise ValueError(f"unsupported config extension {ext!r}")
-        return out
-
-    def drift_kwargs(self) -> dict:
-        r"""Arguments for :func:`hamiltonians.cavity_transmon_drift`.
-
-        That function builds :math:`\chi\, n_c n_t + (k/2) a^{\dagger 2}a^2 +
-        (\alpha/2) b^{\dagger 2} b^2`, whereas this module uses the paper's
-        :math:`-\chi n_c n_t - K_c a^{\dagger 2} a^2`. The returned values
-        carry the sign flips.
-        """
-        return {"chi": -self.chi, "k": -2.0 * self.kerr, "alpha": -self.anharm}
-
 
 # ---------------------------------------------------------------------------
 # Envelopes
@@ -612,10 +151,13 @@ def rotation_waveform(theta: float, phi: float, params: SystemParams) -> np.ndar
 # Semiclassical phase-space trajectories (supplement S3 A)
 # ---------------------------------------------------------------------------
 
+#: Trajectory integrations are padded to a multiple of this many samples.
+_TRAJECTORY_BUCKET = 128
+
 
 def _alpha_rhs(alpha, eps, q, p: SystemParams, delta: float):
     """Right-hand side of Eq. (S5); ``q`` is the transmon excitation, 0 or 1."""
-    n = abs(alpha) ** 2
+    n = np.abs(alpha) ** 2
     return (
         -1j * delta * alpha
         + 2j * p.kerr * n * alpha
@@ -623,6 +165,28 @@ def _alpha_rhs(alpha, eps, q, p: SystemParams, delta: float):
         - 1j * eps
         + 1j * q * (p.chi + 2.0 * p.chi_prime * n) * alpha
     )
+
+
+@jax.jit
+def _rk4_trajectory(drive, excitation, alpha0, dt, delta, kerr, kappa, chi, chi_prime):
+    """RK4 over pre-interpolated ``(left, mid, right)`` samples of the drive and excitation."""
+
+    def rhs(alpha, eps, q):
+        n = alpha.real**2 + alpha.imag**2
+        rate = -1j * delta + 2j * kerr * n - 0.5 * kappa + 1j * q * (chi + 2.0 * chi_prime * n)
+        return rate * alpha - 1j * eps
+
+    def step(alpha, sample):
+        (e0, em, e1), (q0, qm, q1) = sample
+        k1 = rhs(alpha, e0, q0)
+        k2 = rhs(alpha + 0.5 * dt * k1, em, qm)
+        k3 = rhs(alpha + 0.5 * dt * k2, em, qm)
+        k4 = rhs(alpha + dt * k3, e1, q1)
+        alpha = alpha + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+        return alpha, alpha
+
+    _, traj = lax.scan(step, alpha0, (drive, excitation))
+    return jnp.concatenate([alpha0[None], traj])
 
 
 def _integrate_alpha(eps, q_of_t, p: SystemParams, delta: float, alpha0=0.0j, stride: int = 1):
@@ -634,9 +198,7 @@ def _integrate_alpha(eps, q_of_t, p: SystemParams, delta: float, alpha0=0.0j, st
         Cavity drive samples, length ``n``.
     q_of_t : ndarray
         Transmon excitation indicator (0.0 or 1.0). Shape ``(n,)`` for a single
-        branch, or ``(n, m)`` to integrate ``m`` conditional branches at once
-        (the two ECD branches are always solved together, which halves the
-        Python-level overhead of this loop).
+        branch, or ``(n, m)`` to integrate ``m`` conditional branches at once.
     alpha0 : complex or ndarray
         Initial condition, broadcast against the branch axis.
     stride : int
@@ -664,61 +226,23 @@ def _integrate_alpha(eps, q_of_t, p: SystemParams, delta: float, alpha0=0.0j, st
         keep = n_blk * stride
         eps = eps[:keep].reshape(n_blk, stride).mean(axis=1)
         q_of_t = q_of_t[:keep].reshape(n_blk, stride, -1).mean(axis=1)
-    dt = p.dt * stride
-    n = eps.size
-    m = q_of_t.shape[1]
+    n, m = eps.size, q_of_t.shape[1]
 
-    # Midpoint samples by linear interpolation; endpoints held.
-    eps_l = eps.tolist()
-    eps_r = eps_l[1:] + eps_l[-1:]
-    eps_m = [0.5 * (a + b) for a, b in zip(eps_l, eps_r)]
-    q_cols = [q_of_t[:, j].tolist() for j in range(m)]
+    def interpolate(x):
+        """Left, midpoint and right samples of each step; endpoints held."""
+        right = np.concatenate([x[1:], x[-1:]])
+        # Pad to a coarse length grid so the jitted scan is compiled for few shapes.
+        pad = [(0, -n % _TRAJECTORY_BUCKET)] + [(0, 0)] * (x.ndim - 1)
+        return tuple(np.pad(a, pad) for a in (x, 0.5 * (x + right), right))
 
-    # Hoisted scalars: the inner loop is pure Python complex arithmetic, which
-    # is several times faster than numpy scalar ops at this array size.
-    delta_c = 1j * delta
-    kerr2 = 2j * p.kerr
-    half_kappa = 0.5 * p.kappa
-    chi = p.chi
-    chi_p2 = 2.0 * p.chi_prime
-    dt6 = dt / 6.0
-    dt2 = 0.5 * dt
-
-    out = np.empty((n + 1, m), dtype=complex)
-    a0_arr = np.broadcast_to(np.asarray(alpha0, dtype=complex), (m,))
-
-    for j in range(m):
-        q_l = q_cols[j]
-        q_r = q_l[1:] + q_l[-1:]
-        q_m = [0.5 * (x + y) for x, y in zip(q_l, q_r)]
-        a = complex(a0_arr[j])
-        col = out[:, j]
-        col[0] = a
-
-        for k in range(n):
-            e0 = eps_l[k]
-            em = eps_m[k]
-            e1 = eps_r[k]
-            q0 = q_l[k]
-            qm = q_m[k]
-            q1 = q_r[k]
-
-            nn = a.real * a.real + a.imag * a.imag
-            k1 = -delta_c * a + kerr2 * nn * a - half_kappa * a - 1j * e0 + 1j * q0 * (chi + chi_p2 * nn) * a
-            b = a + dt2 * k1
-            nn = b.real * b.real + b.imag * b.imag
-            k2 = -delta_c * b + kerr2 * nn * b - half_kappa * b - 1j * em + 1j * qm * (chi + chi_p2 * nn) * b
-            c = a + dt2 * k2
-            nn = c.real * c.real + c.imag * c.imag
-            k3 = -delta_c * c + kerr2 * nn * c - half_kappa * c - 1j * em + 1j * qm * (chi + chi_p2 * nn) * c
-            d = a + dt * k3
-            nn = d.real * d.real + d.imag * d.imag
-            k4 = -delta_c * d + kerr2 * nn * d - half_kappa * d - 1j * e1 + 1j * q1 * (chi + chi_p2 * nn) * d
-
-            a = a + dt6 * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
-            col[k + 1] = a
-
-    return out[:, 0] if squeeze else out
+    traj = _rk4_trajectory(
+        tuple(a[:, None] for a in interpolate(eps)),
+        interpolate(q_of_t),
+        np.broadcast_to(np.asarray(alpha0, dtype=complex), (m,)),
+        p.dt * stride, delta, p.kerr, p.kappa, p.chi, p.chi_prime,
+    )  # fmt: skip
+    traj = np.asarray(traj)[: n + 1]
+    return traj[:, 0] if squeeze else traj
 
 
 def frame_trajectory(eps, params: SystemParams, delta: float, alpha0: complex = 0.0j):
@@ -818,13 +342,9 @@ class ECDPulse:
     alpha_g: np.ndarray = field(repr=False, default=None)
     alpha_e: np.ndarray = field(repr=False, default=None)
 
-    @property
-    def duration(self) -> float:
-        return len(self.eps) * 0.0 if self.eps is None else len(self.eps)
-
     def summary(self) -> str:
         return (
-            f"beta = {self.beta:+.4f} (|beta| = {abs(self.beta):.4f})   "
+            f"beta ={self.beta:+.4f} (|beta| = {abs(self.beta):.4f})   "
             f"alpha0 = {self.alpha0:.2f}   t_w = {self.t_wait * 1e3:.1f} ns   "
             f"|lambda| = {abs(self.lam):.2e}   theta' = {self.theta_prime:+.4f} rad"
         )
@@ -1389,14 +909,14 @@ def compile_ecd_sequence(
     alpha0: float = 30.0,
     params: SystemParams | None = None,
     delta: float | None = None,
-    frame_sign: float = 1.0,
+    frame_sign: float = -1.0,
     final_displacement: bool = False,
     verbose: bool = False,
     **kwargs,
 ) -> PulseSequence:
     r"""Compile ``R(theta_1,phi_1) -> ECD(beta_1) -> ... -> R(theta_{N+1},phi_{N+1})``.
 
-    Matches the gate ordering of :func:`gate_optimization._build_ecd_sequence`:
+    Matches the gate ordering of :func:`gate_optimization.ecd_sequence`:
     the first rotation acts first, then ECD 1, and so on, with a trailing
     rotation. Time order in the returned waveform is therefore
     ``R_1, ECD_1, R_2, ECD_2, ..., ECD_N, R_{N+1}``.
@@ -1411,9 +931,10 @@ def compile_ecd_sequence(
         Intermediate phase-space radius for every ECD gate. The compiler
         lowers it per gate when the drive constraint binds.
     frame_sign : float
-        Sign of the accumulated :math:`\theta'` in the virtual-Z bookkeeping.
-        ``+1`` is the convention adopted here; flip it
-        only if you change the qubit basis ordering.
+        Sign :math:`s` of :math:`\theta'` in the virtual-Z frame update
+        :math:`F \to -F + s\,\theta'`. The default ``-1`` cancels the
+        :math:`Z(+\theta')` the compiled pulses impart; flip it only if you
+        change the qubit basis ordering.
     final_displacement : bool
         Whether to append :math:`D(\beta_{N+1}/2)` when ``betas`` has ``N+1``
         entries (the optimizer's trailing displacement, usually zero).
@@ -1433,7 +954,7 @@ def compile_ecd_sequence(
     the update is
 
     .. math::
-        \varphi_i \to \varphi_i - F, \qquad F \to -F + \theta'_i .
+        \varphi_i \to \varphi_i - F, \qquad F \to -F - \theta'_i .
 
     With this rule the compiled sequence reproduces the ideal circuit's
     :math:`|g\rangle`-projected cavity state exactly, and its
@@ -1578,7 +1099,7 @@ def snap_waveform(
     It is a *global* phase only if every populated level is driven; a level left
     undriven acquires :math:`+1` instead, so it sits :math:`\pi` out of phase
     with the driven block. Because
-    :func:`gate_optimization._build_snap_sequence` pads unoptimized levels with
+    :func:`gate_optimization.snap_sequence` pads unoptimized levels with
     :math:`\theta_n = 0`, i.e. with :math:`+1`, the ideal gate the optimizer
     solved for and the pulse as naively built differ by :math:`\pi` on the
     entire tail above ``n_drive``. With 20% of the population up there the
@@ -1658,7 +1179,7 @@ def compile_snap_sequence(
 ) -> PulseSequence:
     r"""Compile ``D(alpha_1) -> S(theta_1) -> ... -> S(theta_N) -> D(alpha_{N+1})``.
 
-    Matches :func:`gate_optimization._build_snap_sequence`, whose ``propagate``
+    Matches :func:`gate_optimization.snap_sequence`, whose ``propagate``
     applies ``alphas[0]`` first.
 
     Parameters
@@ -1785,27 +1306,3 @@ def compile_from_result(result, params: SystemParams | None = None, **kwargs) ->
     if result.gate_set == "snap":
         return compile_snap_sequence(p["snap_phases"], p["alphas"], params=params, **kwargs)
     raise ValueError(f"unknown gate set {result.gate_set!r}")
-
-
-# ---------------------------------------------------------------------------
-# Smoke test
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    p = SystemParams()
-    print(f"chi/2pi = {p.chi / TWO_PI * 1e3:.1f} kHz, 2pi/chi = {TWO_PI / p.chi:.2f} us")
-
-    pulse = optimize_ecd_pulse(1.0 + 0.5j, alpha0=30.0, params=p, verbose=True)
-    print(pulse.summary())
-    print(f"gate time: {pulse.eps.size * p.dt * 1e3:.0f} ns")
-
-    seq = compile_ecd_sequence(
-        betas=np.array([1.0 + 0.5j, -0.8 + 0.2j, 2.0 - 0.4j]),
-        thetas=np.array([np.pi / 2, np.pi / 3, np.pi / 4, np.pi / 2]),
-        phis=np.array([0.0, np.pi / 2, -np.pi / 2, 0.0]),
-        alpha0=30.0,
-        params=p,
-        verbose=True,
-    )
-    print()
-    print(seq.summary())

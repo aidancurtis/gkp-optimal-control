@@ -25,7 +25,7 @@ subtract_pedestal   = true
 
 [ecd]
 alpha0 = 30.0               # intermediate phase-space radius
-n_fock = 60                 # cavity truncation *in the displaced frame*
+n_fock = 100                 # cavity truncation *in the displaced frame*
 tol    = 1e-4               # relative tolerance on |beta|
 
 [snap]

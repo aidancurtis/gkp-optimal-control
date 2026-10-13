@@ -1,29 +1,77 @@
-import jax
+"""Optimal control of bosonic codes: speed limits, gate sequences and pulses.
 
-from gkp_optimal_control.animation import animate_wigner
-from gkp_optimal_control.brachistochrone import quantum_brachistochrone_hamiltonian
-from gkp_optimal_control.plotting import (
-    plot_photon_number,
-    plot_wigner,
-    set_plot_style,
-)
-from gkp_optimal_control.states import cat_states, gkp_states
-from gkp_optimal_control.utils import (
-    compute_wigner,
-    wigner_trajectory,
-)
+The most-used entry points are re-exported here. Pulse-level tools live in the
+submodules :mod:`~gkp_optimal_control.grape`, :mod:`~gkp_optimal_control.pulses`,
+:mod:`~gkp_optimal_control.pulse_simulation` and :mod:`~gkp_optimal_control.device`.
+"""
+
+import jax
 
 jax.config.update("jax_enable_x64", True)
 
+from gkp_optimal_control.animation import animate_wigner  # noqa: E402
+from gkp_optimal_control.brachistochrone import quantum_brachistochrone_hamiltonian  # noqa: E402
+from gkp_optimal_control.gate_optimization import (  # noqa: E402
+    GateBounds,
+    GateOptResult,
+    OptimizerConfig,
+    TrajectoryPenalty,
+    csq_sequence,
+    ecd_sequence,
+    optimize_gate_sequence,
+    sequence_history,
+    snap_sequence,
+)
+from gkp_optimal_control.gate_results import (  # noqa: E402
+    gate_result_path,
+    load_gate_result,
+    save_gate_result,
+)
+from gkp_optimal_control.plotting import (  # noqa: E402
+    plot_photon_number,
+    plot_wigner,
+    plot_wigner_snapshots,
+    set_plot_style,
+)
+from gkp_optimal_control.states import (  # noqa: E402
+    cat_states,
+    fock_state,
+    gkp_states,
+    squeezed_vacuum,
+)
+from gkp_optimal_control.utils import (  # noqa: E402
+    compute_wigner,
+    to_ket,
+    to_qarray,
+    wigner_trajectory,
+)
+
 __all__ = [
+    "GateBounds",
+    "GateOptResult",
+    "OptimizerConfig",
+    "TrajectoryPenalty",
     "animate_wigner",
     "cat_states",
     "compute_wigner",
+    "csq_sequence",
+    "ecd_sequence",
+    "fock_state",
+    "gate_result_path",
     "gkp_states",
+    "load_gate_result",
+    "optimize_gate_sequence",
     "plot_photon_number",
     "plot_wigner",
+    "plot_wigner_snapshots",
     "quantum_brachistochrone_hamiltonian",
+    "save_gate_result",
+    "sequence_history",
     "set_plot_style",
+    "snap_sequence",
+    "squeezed_vacuum",
+    "to_ket",
+    "to_qarray",
     "wigner_trajectory",
 ]
 

@@ -29,12 +29,10 @@ Two consequences worth internalizing:
 Conventions
 -----------
 Operator ordering is ``kron(cavity, transmon)``, i.e. joint index
-``n_cav * n_transmon + s``, matching :func:`hamiltonians.cavity_transmon_drift`
-and :func:`gate_optimization.to_joint_ket`.
+``n_cav * n_transmon + s``, matching :func:`operators.joint_operators`.
 
 The Hamiltonian carries the paper's signs (:math:`-\chi a^\dagger a q^\dagger q`,
-:math:`-K_c a^{\dagger 2} a^2`); see :meth:`pulses.SystemParams.drift_kwargs`
-for the translation to :mod:`hamiltonians`.
+:math:`-K_c a^{\dagger 2} a^2`).
 
 Every time-dependent coefficient is evaluated at the *midpoint* of its step and
 every operator in the decomposition is Hermitian with a real coefficient, so
@@ -51,14 +49,11 @@ import numpy as np
 from jax import lax
 from jax.scipy.linalg import expm
 
-try:  # package-relative imports, with a flat-layout fallback
-    from . import pulses as _pulses
-    from .utils import wigner_trajectory
-except ImportError:  # pragma: no cover
-    import pulses as _pulses
-    from utils import wigner_trajectory
+from . import pulses as _pulses
+from .device import SystemParams
+from .operators import annihilation, displacement, joint_operators
+from .utils import wigner_trajectory
 
-SystemParams = _pulses.SystemParams
 PulseSequence = _pulses.PulseSequence
 
 __all__ = [
@@ -78,17 +73,6 @@ _SQRT2 = np.sqrt(2.0)
 # ---------------------------------------------------------------------------
 # Operators
 # ---------------------------------------------------------------------------
-
-
-def joint_operators(n_fock: int, n_transmon: int = 2) -> dict:
-    """Cavity and transmon operators on ``kron(cavity, transmon)``."""
-    a_c = jnp.diag(jnp.sqrt(jnp.arange(1, n_fock, dtype=jnp.complex128)), k=1)
-    b_t = jnp.diag(jnp.sqrt(jnp.arange(1, n_transmon, dtype=jnp.complex128)), k=1)
-    i_c = jnp.eye(n_fock, dtype=jnp.complex128)
-    i_t = jnp.eye(n_transmon, dtype=jnp.complex128)
-    a = jnp.kron(a_c, i_t)
-    b = jnp.kron(i_c, b_t)
-    return {"a": a, "adag": a.conj().T, "b": b, "bdag": b.conj().T, "a_c": a_c}
 
 
 def hamiltonian_terms(
@@ -318,7 +302,7 @@ class SimResult:
         n_res = np.einsum("tsi,i->t", pop, n_vec)
         if not lab:
             return n_res
-        a_c = np.diag(np.sqrt(np.arange(1, self.n_fock)), k=1)
+        a_c = np.asarray(annihilation(self.n_fock))
         a_exp = np.einsum("tsi,ij,tsj->t", blk.conj(), a_c, blk)
         return n_res + 2.0 * np.real(np.conj(self.alpha) * a_exp) + np.abs(self.alpha) ** 2
 
@@ -373,10 +357,7 @@ class SimResult:
 
 
 def _displace_np(n_fock: int, alpha: complex) -> np.ndarray:
-    from scipy.linalg import expm as _expm
-
-    a = np.diag(np.sqrt(np.arange(1, n_fock)), k=1).astype(complex)
-    return _expm(alpha * a.conj().T - np.conj(alpha) * a)
+    return np.asarray(displacement(n_fock, alpha))
 
 
 # ---------------------------------------------------------------------------
@@ -406,9 +387,9 @@ def _make_stepper(h_static, ops, dt, method: str):
 def check_compile_convention(result, params, psi_target, n_fock, fid_tol=5e-3, **compile_kw):
     """Linear compile must reproduce the ideal circuit's fidelity.
 
-    Stands in for the missing ``verify_ecd_pulse``: compiles ``result`` with
-    chi' = K = kappa = 0, simulates it in the displaced frame, and asserts the
-    joint fidelity (|g> block, unnormalized) matches ``result.fidelity``. A
+    Compiles ``result`` with chi' = K = kappa = 0, simulates it in the
+    displaced frame, and asserts the joint fidelity (|g> block, unnormalized)
+    matches ``result.fidelity``. A
     wrong virtual-Z sign or beta convention shows up as a few-percent gap.
     """
     p_lin = params.replace(kappa=0.0, chi_prime=0.0, kerr=0.0)
@@ -520,12 +501,7 @@ def simulate_sequence(
     if frame == "lab":
         dalpha = np.zeros(seq.n_samples, dtype=complex)
     else:
-        dalpha = np.array(
-            [
-                _pulses._alpha_rhs(alpha_mid[k], seq.eps[k], 0.0, frame_params, seq.delta)
-                for k in range(seq.n_samples)
-            ]
-        )
+        dalpha = _pulses._alpha_rhs(alpha_mid, seq.eps, 0.0, frame_params, seq.delta)
     coeff = _coefficients(
         alpha_mid, dalpha, seq.eps, seq.omega, p, seq.delta, kappa_h
     )
@@ -648,57 +624,3 @@ def lab_extent(xvec: np.ndarray, yvec: np.ndarray, offset) -> tuple:
     """``imshow`` extent for one lab-frame Wigner frame."""
     dx, dp = float(offset[0]), float(offset[1])
     return (xvec[0] + dx, xvec[-1] + dx, yvec[0] + dp, yvec[-1] + dp)
-
-
-# ---------------------------------------------------------------------------
-# Smoke test
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    jax.config.update("jax_enable_x64", True)
-
-    # --- a bare displacement, in both frames.
-    # This catches a whole class of bug in the residual-drive coefficient: if
-    # the derivative of the factored-out trajectory is inconsistent with the
-    # trajectory itself, the cavity drive cancels silently and the state simply
-    # never moves. In the lab frame <n> must equal |alpha|^2; in the displaced
-    # frame the residual state must stay at the origin.
-    p0 = SystemParams()
-    g_env, area = _pulses.gaussian_envelope(p0.sigma_disp, p0.n_sigma_disp, p0.dt)
-    alpha_test = 1.3 - 0.4j
-    eps_test = (1j * alpha_test / area) * g_env
-    seq_d = PulseSequence(
-        eps=eps_test.astype(complex),
-        omega=np.zeros(eps_test.size, dtype=complex),
-        params=p0,
-        delta=0.0,
-        segments=[_pulses.PulseSegment("displacement", 0, eps_test.size, "D")],
-        gate_indices=np.array([eps_test.size]),
-        meta={"gate_set": "test"},
-    )
-    for frame_name, expected in (("lab", abs(alpha_test) ** 2), ("displaced", 0.0)):
-        r = simulate_sequence(seq_d, n_fock=30, frame=frame_name, save_every=10)
-        n_end = r.photon_number(lab=False)[-1]
-        ok = abs(n_end - expected) < 1e-3
-        print(
-            f"{frame_name:>9} frame: <n> in frame = {n_end:.6f}, expected "
-            f"{expected:.6f}  {'ok' if ok else 'FAIL'}"
-        )
-        assert ok, f"{frame_name} frame displacement is wrong"
-    print()
-
-    p = SystemParams(chi=2 * np.pi * 0.2)  # 200 kHz, so the pulses stay short
-    seq = _pulses.compile_ecd_sequence(
-        betas=np.array([0.7 + 0.3j, -1.1 + 0.2j]),
-        thetas=np.array([np.pi / 2, 0.7 * np.pi, np.pi / 3]),
-        phis=np.array([0.0, 0.4 * np.pi, -0.3 * np.pi]),
-        alpha0=8.0,
-        params=p,
-    )
-    print(seq.summary())
-    res = simulate_sequence(seq, n_fock=40)
-    print(f"\nsaved frames    : {res.states.shape[0]}")
-    print(f"truncation error: {res.truncation_error():.2e}")
-    print(f"P(g) at the end : {res.p_ground()[-1]:.5f}")
-    print(f"max <n> (lab)   : {res.photon_number().max():.1f}")
-    print(f"|alpha(T)|      : {abs(res.alpha[-1]):.4f}")

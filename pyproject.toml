@@ -27,14 +27,16 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Physics",
 ]
 dependencies = [
+    "diffrax>=0.7.2",
+    "imageio-ffmpeg>=0.6.0",
     "ipympl>=0.10.0",
     "jax>=0.10.0",
     "jaxquantum>=0.3.0",
     "jupyter>=1.1.1",
     "matplotlib>=3.10.8",
     "numpy>=1.26",
-    "optax>=0.2.8",
     "optimistix>=0.1.0",
+    "scipy>=1.16.3",
     "sympy>=1.14.0",
 ]
 
@@ -46,6 +48,7 @@ notebooks = [
 
 [dependency-groups]
 dev = [
+    "pytest>=9.1.1",
     "ruff>=0.15.0",
 ]
 
