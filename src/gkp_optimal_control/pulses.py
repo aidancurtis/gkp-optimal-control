@@ -65,9 +65,9 @@ The sign convention for the realized conditional displacement,
 
 matches Eq. (S25), :math:`\mathrm{CD}(\beta) = D(\beta/2)|g\rangle\langle g| +
 D(-\beta/2)|e\rangle\langle e|`, and therefore
-:func:`gate_optimization._build_ecd_sequence`. (Section S4 B of the supplement
+:func:`gate_optimization.ecd_sequence`. (Section S4 B of the supplement
 states the opposite sign; Eq. (S25) and the main text agree with the choice
-made here, and :func:`verify_ecd_pulse` checks it numerically.)
+made here.)
 """
 
 from __future__ import annotations
@@ -818,13 +818,9 @@ class ECDPulse:
     alpha_g: np.ndarray = field(repr=False, default=None)
     alpha_e: np.ndarray = field(repr=False, default=None)
 
-    @property
-    def duration(self) -> float:
-        return len(self.eps) * 0.0 if self.eps is None else len(self.eps)
-
     def summary(self) -> str:
         return (
-            f"beta = {self.beta:+.4f} (|beta| = {abs(self.beta):.4f})   "
+            f"beta ={self.beta:+.4f} (|beta| = {abs(self.beta):.4f})   "
             f"alpha0 = {self.alpha0:.2f}   t_w = {self.t_wait * 1e3:.1f} ns   "
             f"|lambda| = {abs(self.lam):.2e}   theta' = {self.theta_prime:+.4f} rad"
         )
@@ -1389,14 +1385,14 @@ def compile_ecd_sequence(
     alpha0: float = 30.0,
     params: SystemParams | None = None,
     delta: float | None = None,
-    frame_sign: float = 1.0,
+    frame_sign: float = -1.0,
     final_displacement: bool = False,
     verbose: bool = False,
     **kwargs,
 ) -> PulseSequence:
     r"""Compile ``R(theta_1,phi_1) -> ECD(beta_1) -> ... -> R(theta_{N+1},phi_{N+1})``.
 
-    Matches the gate ordering of :func:`gate_optimization._build_ecd_sequence`:
+    Matches the gate ordering of :func:`gate_optimization.ecd_sequence`:
     the first rotation acts first, then ECD 1, and so on, with a trailing
     rotation. Time order in the returned waveform is therefore
     ``R_1, ECD_1, R_2, ECD_2, ..., ECD_N, R_{N+1}``.
@@ -1411,9 +1407,10 @@ def compile_ecd_sequence(
         Intermediate phase-space radius for every ECD gate. The compiler
         lowers it per gate when the drive constraint binds.
     frame_sign : float
-        Sign of the accumulated :math:`\theta'` in the virtual-Z bookkeeping.
-        ``+1`` is the convention adopted here; flip it
-        only if you change the qubit basis ordering.
+        Sign :math:`s` of :math:`\theta'` in the virtual-Z frame update
+        :math:`F \to -F + s\,\theta'`. The default ``-1`` cancels the
+        :math:`Z(+\theta')` the compiled pulses impart; flip it only if you
+        change the qubit basis ordering.
     final_displacement : bool
         Whether to append :math:`D(\beta_{N+1}/2)` when ``betas`` has ``N+1``
         entries (the optimizer's trailing displacement, usually zero).
@@ -1433,7 +1430,7 @@ def compile_ecd_sequence(
     the update is
 
     .. math::
-        \varphi_i \to \varphi_i - F, \qquad F \to -F + \theta'_i .
+        \varphi_i \to \varphi_i - F, \qquad F \to -F - \theta'_i .
 
     With this rule the compiled sequence reproduces the ideal circuit's
     :math:`|g\rangle`-projected cavity state exactly, and its
@@ -1578,7 +1575,7 @@ def snap_waveform(
     It is a *global* phase only if every populated level is driven; a level left
     undriven acquires :math:`+1` instead, so it sits :math:`\pi` out of phase
     with the driven block. Because
-    :func:`gate_optimization._build_snap_sequence` pads unoptimized levels with
+    :func:`gate_optimization.snap_sequence` pads unoptimized levels with
     :math:`\theta_n = 0`, i.e. with :math:`+1`, the ideal gate the optimizer
     solved for and the pulse as naively built differ by :math:`\pi` on the
     entire tail above ``n_drive``. With 20% of the population up there the
@@ -1658,7 +1655,7 @@ def compile_snap_sequence(
 ) -> PulseSequence:
     r"""Compile ``D(alpha_1) -> S(theta_1) -> ... -> S(theta_N) -> D(alpha_{N+1})``.
 
-    Matches :func:`gate_optimization._build_snap_sequence`, whose ``propagate``
+    Matches :func:`gate_optimization.snap_sequence`, whose ``propagate``
     applies ``alphas[0]`` first.
 
     Parameters

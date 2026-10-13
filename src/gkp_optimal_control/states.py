@@ -171,3 +171,59 @@ def gkp_states(
     gkp_1 = jqt.Qarray.create(gkp_1_data.reshape(n_fock, 1))
 
     return gkp_0.unit(), gkp_1.unit()
+
+
+@partial(jax.jit, static_argnames=("n_fock",))
+def squeezed_vacuum(n_fock: int, r: float, phi: float = 0.0) -> jqt.Qarray:
+    r"""Return the squeezed vacuum :math:`S(\xi)|0\rangle`, :math:`\xi = r e^{i\phi}`.
+
+    Uses :math:`S(\xi) = \exp[\tfrac{1}{2}(\xi^* a^2 - \xi a^{\dagger 2})]`, the same
+    convention as the squeeze gate in ``gate_optimization``. For ``phi = 0`` and
+    ``r > 0`` the state is squeezed in :math:`x`.
+
+    Parameters
+    ----------
+    n_fock : int
+        Fock-space truncation dimension.
+    r : float
+        Squeezing parameter (squeezing in dB is ``20 * r * log10(e)``).
+    phi : float, optional
+        Squeezing angle.
+
+    Returns
+    -------
+    jaxquantum.Qarray
+        Normalized squeezed vacuum (renormalized after truncation).
+    """
+    m = jnp.arange((n_fock + 1) // 2)
+    log_mag = (
+        0.5 * jax.scipy.special.gammaln(2 * m + 1)
+        - jax.scipy.special.gammaln(m + 1)
+        - m * jnp.log(2.0)
+        - 0.5 * jnp.log(jnp.cosh(r))
+    )
+    coeffs = jnp.exp(log_mag) * (-jnp.exp(1j * phi) * jnp.tanh(r)) ** m
+
+    data = jnp.zeros(n_fock, dtype=coeffs.dtype).at[2 * m].set(coeffs)
+    return jqt.Qarray.create(data.reshape(n_fock, 1)).unit()
+
+
+def fock_state(n_fock: int, n: int) -> jqt.Qarray:
+    r"""Return the Fock state :math:`|n\rangle`.
+
+    Parameters
+    ----------
+    n_fock : int
+        Fock-space truncation dimension.
+    n : int
+        Photon number, with ``0 <= n < n_fock``.
+
+    Returns
+    -------
+    jaxquantum.Qarray
+        The basis ket :math:`|n\rangle` as an ``(n_fock, 1)`` column vector.
+    """
+    if not 0 <= n < n_fock:
+        raise ValueError(f"n={n} is outside the truncated space [0, {n_fock}).")
+    data = jnp.zeros((n_fock, 1), dtype=jnp.complex128).at[n, 0].set(1.0)
+    return jqt.Qarray.create(data)

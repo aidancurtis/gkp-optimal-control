@@ -74,12 +74,15 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
+import jax
 import numpy as np
 import sympy as sp
 from sympy import Add, Mul, cos, cosh, exp, factorial, sin, sinh
 from sympy.physics.quantum import Commutator, Dagger
 from sympy.physics.quantum.boson import BosonOp
 from sympy.physics.quantum.operatorordering import normal_ordered_form
+
+from . import operators as _ops
 
 __all__ = [
     "HAVE_SYMBOSONKIT",
@@ -382,7 +385,7 @@ def merge_displacements_symbolic(n_gates: int, max_order: int = 5):
 
 
 def annihilation(n_fock: int) -> np.ndarray:
-    return np.diag(np.sqrt(np.arange(1, n_fock)), 1).astype(complex)
+    return np.asarray(_ops.annihilation(n_fock))
 
 
 def num_op(expr, n_fock: int, subs: dict | None = None) -> np.ndarray:
@@ -454,15 +457,17 @@ class fast_displacement:
 # Circuit structure (NumPy mirror of the ECD gate set)
 # ---------------------------------------------------------------------------
 
-SIGMA_X = np.array([[0, 1], [1, 0]], dtype=complex)
+SIGMA_X = np.asarray(_ops.SIGMA_X)
 _KET = {1: np.array([1, 0], dtype=complex), -1: np.array([0, 1], dtype=complex)}
 
 
+# Jitted: eager JAX dispatch would dominate the NumPy propagation loops below.
+_qubit_rotation = jax.jit(_ops.qubit_rotation)
+
+
 def qubit_rotation(theta: float, phi: float) -> np.ndarray:
-    r"""``R(theta, phi)`` as a 2x2 array, matching :mod:`gate_optimization`."""
-    c, s = np.cos(theta / 2) + 0j, np.sin(theta / 2) + 0j
-    return np.array([[c, -1j * np.exp(-1j * phi) * s],
-                     [-1j * np.exp(1j * phi) * s, c]])
+    r"""``R(theta, phi)`` of :func:`operators.qubit_rotation`, as a NumPy array."""
+    return np.asarray(_qubit_rotation(theta, phi))
 
 
 def qubit_factors(thetas, phis) -> list[np.ndarray]:

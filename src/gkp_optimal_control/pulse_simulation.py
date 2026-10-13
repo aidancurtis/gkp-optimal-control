@@ -53,9 +53,11 @@ from jax.scipy.linalg import expm
 
 try:  # package-relative imports, with a flat-layout fallback
     from . import pulses as _pulses
+    from .operators import annihilation, displacement, joint_operators
     from .utils import wigner_trajectory
 except ImportError:  # pragma: no cover
     import pulses as _pulses
+    from operators import annihilation, displacement, joint_operators
     from utils import wigner_trajectory
 
 SystemParams = _pulses.SystemParams
@@ -78,17 +80,6 @@ _SQRT2 = np.sqrt(2.0)
 # ---------------------------------------------------------------------------
 # Operators
 # ---------------------------------------------------------------------------
-
-
-def joint_operators(n_fock: int, n_transmon: int = 2) -> dict:
-    """Cavity and transmon operators on ``kron(cavity, transmon)``."""
-    a_c = jnp.diag(jnp.sqrt(jnp.arange(1, n_fock, dtype=jnp.complex128)), k=1)
-    b_t = jnp.diag(jnp.sqrt(jnp.arange(1, n_transmon, dtype=jnp.complex128)), k=1)
-    i_c = jnp.eye(n_fock, dtype=jnp.complex128)
-    i_t = jnp.eye(n_transmon, dtype=jnp.complex128)
-    a = jnp.kron(a_c, i_t)
-    b = jnp.kron(i_c, b_t)
-    return {"a": a, "adag": a.conj().T, "b": b, "bdag": b.conj().T, "a_c": a_c}
 
 
 def hamiltonian_terms(
@@ -318,7 +309,7 @@ class SimResult:
         n_res = np.einsum("tsi,i->t", pop, n_vec)
         if not lab:
             return n_res
-        a_c = np.diag(np.sqrt(np.arange(1, self.n_fock)), k=1)
+        a_c = np.asarray(annihilation(self.n_fock))
         a_exp = np.einsum("tsi,ij,tsj->t", blk.conj(), a_c, blk)
         return n_res + 2.0 * np.real(np.conj(self.alpha) * a_exp) + np.abs(self.alpha) ** 2
 
@@ -373,10 +364,7 @@ class SimResult:
 
 
 def _displace_np(n_fock: int, alpha: complex) -> np.ndarray:
-    from scipy.linalg import expm as _expm
-
-    a = np.diag(np.sqrt(np.arange(1, n_fock)), k=1).astype(complex)
-    return _expm(alpha * a.conj().T - np.conj(alpha) * a)
+    return np.asarray(displacement(n_fock, alpha))
 
 
 # ---------------------------------------------------------------------------
@@ -406,9 +394,9 @@ def _make_stepper(h_static, ops, dt, method: str):
 def check_compile_convention(result, params, psi_target, n_fock, fid_tol=5e-3, **compile_kw):
     """Linear compile must reproduce the ideal circuit's fidelity.
 
-    Stands in for the missing ``verify_ecd_pulse``: compiles ``result`` with
-    chi' = K = kappa = 0, simulates it in the displaced frame, and asserts the
-    joint fidelity (|g> block, unnormalized) matches ``result.fidelity``. A
+    Compiles ``result`` with chi' = K = kappa = 0, simulates it in the
+    displaced frame, and asserts the joint fidelity (|g> block, unnormalized)
+    matches ``result.fidelity``. A
     wrong virtual-Z sign or beta convention shows up as a few-percent gap.
     """
     p_lin = params.replace(kappa=0.0, chi_prime=0.0, kerr=0.0)
