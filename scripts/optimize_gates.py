@@ -52,10 +52,11 @@ import gkp_optimal_control  # noqa: F401  (enables 64-bit JAX)
 from gkp_optimal_control.gate_optimization import (
     GateBounds,
     OptimizerConfig,
+    build_sequence,
     optimize_gate_sequence,
     sequence_history,
 )
-from gkp_optimal_control.gate_results import build_sequence, gate_result_path, save_gate_result
+from gkp_optimal_control.gate_results import gate_result_path, save_gate_result
 from gkp_optimal_control.plotting import plot_wigner_snapshots, set_plot_style
 from gkp_optimal_control.states import cat_states, fock_state, gkp_states, squeezed_vacuum
 
@@ -65,7 +66,6 @@ GKP_BETA = 1j * np.sqrt(np.pi / 2)
 # Ansatz options and the gate sets they apply to.
 _ANSATZ_FLAGS = {
     "disp_method": ("ecd", "snap"),
-    "sq_method": ("csq",),
     "n_snap": ("snap",),
     "qubit_target": ("ecd", "csq"),
     "echoed": ("ecd",),
@@ -158,8 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
     bounds.add_argument("--leakage-weight", type=float, default=1.0, help="(default: 1.0)")
 
     ansatz = parser.add_argument_group("ansatz (library defaults unless given)")
-    ansatz.add_argument("--disp-method", choices=("expm", "quadrature", "fixed"), help="ecd, snap")
-    ansatz.add_argument("--sq-method", choices=("fixed", "eig", "expm"), help="csq")
+    ansatz.add_argument("--disp-method", choices=("fixed", "exact"), help="ecd, snap")
     ansatz.add_argument("--n-snap", type=int, help="Fock phases optimized per SNAP gate")
     ansatz.add_argument("--qubit-target", choices=("ground", "traced"), help="ecd, csq")
     ansatz.add_argument(
@@ -223,12 +222,9 @@ def plot_gate_wigners(result, psi_init, psi_targ, bound: float):
         bound,
         n_snapshots=len(states),
         title=f"{result.gate_set.upper()}, {result.n_gates} gates, $F = {result.fidelity:.4f}$",
+        labels=labels,
     )
-    for ax, label in zip(axes, labels, strict=False):  # last axis is the colorbar
-        ax.set_title(label)
-    fig = axes[0].figure
-    fig.set_size_inches(max(14.0, 2.4 * len(states)), 3.75)
-    return fig
+    return axes[0].figure
 
 
 def _unused_path(path: Path) -> Path:
@@ -297,8 +293,6 @@ def main(argv: list[str] | None = None) -> int:
         saved = save_gate_result(
             result,
             path,
-            initial_state=psi_init,
-            ansatz=ansatz,
             overwrite=args.overwrite,
             init=args.init,
             target=args.target,

@@ -1,12 +1,8 @@
 """The shared operator module and its re-exports from the modules that used to own them."""
 
 import numpy as np
-import pytest
 
 import gkp_optimal_control  # noqa: F401  (enables 64-bit JAX)
-from gkp_optimal_control import ecd_symbolic as es
-from gkp_optimal_control import gate_optimization as go
-from gkp_optimal_control import hamiltonians as hm
 from gkp_optimal_control import operators as op
 from gkp_optimal_control import pulse_simulation as ps
 
@@ -48,41 +44,8 @@ def test_pauli_matrices():
     np.testing.assert_allclose(op.qubit_rotation(np.pi, np.pi / 2), -1j * y, atol=1e-15)
 
 
-def test_displacement_is_the_expm_builder():
+def test_displacement_builder_is_cached_and_shared():
+    assert op.make_displacement(N_FOCK) is op.make_displacement(N_FOCK)
     alpha = 0.4 - 0.3j
-    d_op = op.displacement(N_FOCK, alpha)
-    np.testing.assert_allclose(d_op, op.make_displacement(N_FOCK, "expm")(alpha))
-    np.testing.assert_allclose(ps._displace_np(N_FOCK, alpha), d_op)
-
-
-def test_old_import_paths_still_resolve():
-    assert hm.cavity_operators is op.cavity_operators
-    assert hm.quadrature_operators is op.quadrature_operators
-    assert ps.joint_operators is op.joint_operators
-    for name in ("make_displacement", "make_displacement_apply", "make_squeeze",
-                 "make_squeeze_apply", "qubit_rotation"):  # fmt: skip
-        assert getattr(go, name) is getattr(op, name)
-
-
-def test_numpy_wrappers_return_numpy():
-    assert isinstance(es.annihilation(N_FOCK), np.ndarray)
-    assert isinstance(es.qubit_rotation(1.1, -2.0), np.ndarray)
-    assert isinstance(es.SIGMA_X, np.ndarray)
-    assert isinstance(ps._displace_np(N_FOCK, 0.2), np.ndarray)
-    np.testing.assert_allclose(es.qubit_rotation(1.1, -2.0), op.qubit_rotation(1.1, -2.0))
-
-
-@pytest.mark.parametrize("chi, k, alpha", [(0.7, 0.0, 0.0), (-0.4, 0.05, -1.3)])
-def test_cavity_transmon_drift_matches_explicit_form(chi, k, alpha):
-    n_tr = 3
-    o = op.joint_operators(N_FOCK, n_tr)
-    a, adag, b, bdag = (np.asarray(o[key]) for key in ("a", "adag", "b", "bdag"))
-    expected = (
-        chi * (adag @ a) @ (bdag @ b)
-        + 0.5 * k * adag @ adag @ a @ a
-        + 0.5 * alpha * bdag @ bdag @ b @ b
-    )
-    np.testing.assert_allclose(hm.cavity_transmon_drift(N_FOCK, n_tr, chi, k, alpha), expected)
-    controls = np.asarray(hm.cavity_transmon_iq_controls(N_FOCK, n_tr))
-    np.testing.assert_allclose(controls[0], a + adag)
-    np.testing.assert_allclose(controls[3], 1j * (b - bdag))
+    np.testing.assert_allclose(ps._displace_np(N_FOCK, alpha), op.displacement(N_FOCK, alpha))
+    assert isinstance(ps._displace_np(N_FOCK, alpha), np.ndarray)

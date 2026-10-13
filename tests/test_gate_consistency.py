@@ -1,10 +1,9 @@
 """Consistency of the ECD and SNAP gate sets across their implementations.
 
-The same circuits are implemented several times: the JAX block-basis
-propagators in :mod:`gate_optimization` (three displacement methods each), the
-NumPy mirror and branch expansion in :mod:`ecd_symbolic`, and the conventions
-written in the module docstrings. These tests pin them to each other and to
-independent dense references built here with ``scipy.linalg.expm``.
+The JAX block-basis propagators in :mod:`gate_optimization` (two displacement
+methods each) and the builders in :mod:`operators` are pinned to the
+conventions written in their docstrings, using independent dense references
+built here with ``scipy.linalg.expm``.
 
 Truncated displacements only compose like the infinite-dimensional ones away
 from the Fock cutoff, so identities that rely on ``D(a) D(b) ~ D(a + b)`` or on
@@ -19,12 +18,12 @@ import pytest
 from scipy.linalg import expm
 
 import gkp_optimal_control  # noqa: F401  (enables 64-bit JAX)
-from gkp_optimal_control import ecd_symbolic as es
 from gkp_optimal_control import gate_optimization as go
+from gkp_optimal_control import operators as op
 
 N_FOCK = 48
 LOW = 16
-DISP_METHODS = ("expm", "quadrature", "fixed")
+DISP_METHODS = ("fixed", "exact")
 ALPHA = 0.6 - 0.4j
 
 SIGMA_X = np.array([[0, 1], [1, 0]], dtype=complex)
@@ -39,6 +38,39 @@ SIGMA_Y = np.array([[0, -1j], [1j, 0]], dtype=complex)
 def _ref_displacement(alpha: complex, n_fock: int = N_FOCK) -> np.ndarray:
     a = np.diag(np.sqrt(np.arange(1, n_fock)), 1).astype(complex)
     return expm(alpha * a.conj().T - np.conj(alpha) * a)
+
+
+def _ref_rotation(theta: float, phi: float) -> np.ndarray:
+    return expm(-0.5j * theta * (np.cos(phi) * SIGMA_X + np.sin(phi) * SIGMA_Y))
+
+
+def _ref_ecd_history(thetas, phis, betas, ket) -> np.ndarray:
+    """Dense reference for ``R_{N+1} ECD_N R_N ... ECD_1 R_1`` on ``|g>|ket>``.
+
+    ``ECD(beta) = D(beta/2)|e><g| + D(-beta/2)|g><e|``. Returns the block state
+    ``(2, n_fock)``, index 0 = ``|g>``, at the input and after every gate.
+    """
+    psi = np.stack([np.asarray(ket, dtype=complex), np.zeros(len(ket), dtype=complex)])
+    history = [psi]
+    for i, (theta, phi) in enumerate(zip(thetas, phis, strict=True)):
+        psi = _ref_rotation(theta, phi) @ psi
+        history.append(psi)
+        if i < len(betas):
+            d_op = _ref_displacement(betas[i] / 2, len(ket))
+            psi = np.stack([d_op.conj().T @ psi[1], d_op @ psi[0]])
+            history.append(psi)
+    return np.stack(history)
+
+
+def _displacement_product(alphas) -> tuple[complex, float]:
+    r"""``D(a_n) ... D(a_1) = e^{i Phi} D(sum a)`` with ``Phi = sum_{i<j} Im(a_j conj(a_i))``."""
+    alphas = np.asarray(alphas, dtype=complex)
+    phase = sum(
+        float(np.imag(alphas[j] * np.conj(alphas[i])))
+        for i in range(len(alphas))
+        for j in range(i + 1, len(alphas))
+    )
+    return complex(alphas.sum()), phase
 
 
 def _low_kets(seed: int, k: int = 2, n_levels: int = 6) -> np.ndarray:
@@ -92,52 +124,69 @@ def _run(seq, flat, psi_cav) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("method", ["expm", "quadrature"])
-def test_displacement_is_unitary(method):
-    d_op = np.asarray(go.make_displacement(N_FOCK, method)(ALPHA))
+def _matrix_free_displacement(alpha: complex) -> np.ndarray:
+    """The matrix that ``make_displacement_apply`` applies, built column by column."""
+    apply = op.make_displacement_apply(N_FOCK)
+    return np.asarray(apply(jnp.eye(N_FOCK, dtype=jnp.complex128), alpha)).T
+
+
+def test_exact_displacement_matches_reference():
+    d_op = np.asarray(op.make_displacement(N_FOCK)(ALPHA))
+    np.testing.assert_allclose(d_op, _ref_displacement(ALPHA), atol=1e-12)
     np.testing.assert_allclose(d_op.conj().T @ d_op, np.eye(N_FOCK), atol=1e-12)
+    np.testing.assert_allclose(op.make_displacement(N_FOCK)(0.0), np.eye(N_FOCK), atol=1e-15)
+    np.testing.assert_allclose(op.displacement(N_FOCK, ALPHA), d_op)
 
 
-def test_fast_displacement_is_unitary():
-    d_op = es.fast_displacement(N_FOCK)(ALPHA)
+def test_matrix_free_displacement_is_unitary_and_matches_away_from_cutoff():
+    d_op = _matrix_free_displacement(ALPHA)
     np.testing.assert_allclose(d_op.conj().T @ d_op, np.eye(N_FOCK), atol=1e-12)
-
-
-def test_displacement_builders_match_reference():
+    # A different factorization of D: equal to the exact one only away from the cutoff.
     ref = _ref_displacement(ALPHA)
-    d_expm = np.asarray(go.make_displacement(N_FOCK, "expm")(ALPHA))
-    d_quad = np.asarray(go.make_displacement(N_FOCK, "quadrature")(ALPHA))
-    d_fast = es.fast_displacement(N_FOCK)(ALPHA)
-    np.testing.assert_allclose(d_expm, ref, atol=1e-12)
-    # Same truncated generator, different algorithm.
-    np.testing.assert_allclose(d_fast, ref, atol=1e-8)
-    # Different factorization: equal only away from the cutoff.
-    np.testing.assert_allclose(d_quad[:LOW, :LOW], ref[:LOW, :LOW], atol=1e-12)
+    np.testing.assert_allclose(d_op[:LOW, :LOW], ref[:LOW, :LOW], atol=1e-12)
+    assert np.abs(d_op - ref).max() > 1e-3
 
 
-def test_fixed_apply_matches_quadrature_matrix():
-    d_quad = np.asarray(go.make_displacement(N_FOCK, "quadrature")(ALPHA))
-    apply = go.make_displacement_apply(N_FOCK)
+def test_matrix_free_displacement_adjoint():
+    d_op = _matrix_free_displacement(ALPHA)
+    apply = op.make_displacement_apply(N_FOCK)
     rng = np.random.default_rng(3)
     psi = rng.normal(size=(3, N_FOCK)) + 1j * rng.normal(size=(3, N_FOCK))
-    np.testing.assert_allclose(apply(jnp.asarray(psi), ALPHA), psi @ d_quad.T, atol=1e-12)
+    np.testing.assert_allclose(apply(jnp.asarray(psi), ALPHA), psi @ d_op.T, atol=1e-12)
     np.testing.assert_allclose(
-        apply(jnp.asarray(psi), ALPHA, adjoint=True), psi @ d_quad.conj(), atol=1e-12
+        apply(jnp.asarray(psi), ALPHA, adjoint=True), psi @ d_op.conj(), atol=1e-12
     )
 
 
-@pytest.mark.parametrize("method", ["expm", "quadrature"])
-def test_displaced_vacuum_is_coherent_state(method):
-    d_op = np.asarray(go.make_displacement(N_FOCK, method)(ALPHA))
+@pytest.mark.parametrize("build", [lambda: op.make_displacement(N_FOCK)(ALPHA),
+                                   lambda: _matrix_free_displacement(ALPHA)],
+                         ids=["exact", "matrix_free"])  # fmt: skip
+def test_displaced_vacuum_is_coherent_state(build):
+    d_op = np.asarray(build())
     n = np.arange(LOW)
     log_fact = np.cumsum(np.log(np.maximum(n, 1)))
     coherent = np.exp(-abs(ALPHA) ** 2 / 2) * ALPHA**n / np.exp(0.5 * log_fact)
     np.testing.assert_allclose(d_op[:LOW, 0], coherent, atol=1e-12)
 
 
+@pytest.mark.parametrize("r, phi", [(0.4, 0.7), (0.8, -2.0)])
+def test_matrix_free_squeeze_matches_reference(r, phi):
+    a = np.diag(np.sqrt(np.arange(1, N_FOCK)), 1).astype(complex)
+    gen = 0.5 * r * (a @ a * np.exp(-1j * phi) - (a @ a).conj().T * np.exp(1j * phi))
+    apply = op.make_squeeze_apply(N_FOCK)
+    s_op = np.asarray(apply(jnp.eye(N_FOCK, dtype=jnp.complex128), r, phi)).T
+    np.testing.assert_allclose(s_op, expm(gen), atol=1e-10)
+    np.testing.assert_allclose(s_op.conj().T @ s_op, np.eye(N_FOCK), atol=1e-12)
+    # Two phases at once: one per qubit block.
+    psi = np.random.default_rng(5).normal(size=(2, 2, N_FOCK)) + 0j
+    both = np.asarray(apply(jnp.asarray(psi), r, jnp.array([phi, phi + 1.0])))
+    np.testing.assert_allclose(both[:, 0], psi[:, 0] @ s_op.T, atol=1e-10)
+    assert not np.allclose(both[:, 1], psi[:, 1] @ s_op.T)
+
+
 def test_displacement_product_matches_matrix_product():
     alphas = [0.3 + 0.2j, -0.25 + 0.4j, 0.1 - 0.35j]
-    total, phase = es.displacement_product(alphas)
+    total, phase = _displacement_product(alphas)
     product = np.eye(N_FOCK, dtype=complex)
     for alpha in alphas:  # D(alpha_n) ... D(alpha_1)
         product = _ref_displacement(alpha) @ product
@@ -151,10 +200,8 @@ def test_displacement_product_matches_matrix_product():
 
 
 @pytest.mark.parametrize("theta, phi", [(0.0, 0.3), (np.pi / 2, 0.0), (1.1, -2.0), (np.pi, 0.7)])
-def test_qubit_rotation_conventions_agree(theta, phi):
-    ref = expm(-0.5j * theta * (np.cos(phi) * SIGMA_X + np.sin(phi) * SIGMA_Y))
-    np.testing.assert_allclose(np.asarray(go.qubit_rotation(theta, phi)), ref, atol=1e-14)
-    np.testing.assert_allclose(es.qubit_rotation(theta, phi), ref, atol=1e-14)
+def test_qubit_rotation_matches_convention(theta, phi):
+    np.testing.assert_allclose(op.qubit_rotation(theta, phi), _ref_rotation(theta, phi), atol=1e-14)
 
 
 # ---------------------------------------------------------------------------
@@ -187,19 +234,19 @@ def test_echoed_gate_is_qubit_flip_of_bare_conditional(method):
 
 @pytest.mark.parametrize("method", DISP_METHODS)
 @pytest.mark.parametrize("n_gates", [1, 2, 4])
-def test_ecd_sequence_matches_numpy_mirror(n_gates, method):
+def test_ecd_sequence_matches_dense_reference(n_gates, method):
     thetas, phis, betas = _ecd_params(n_gates, seed=n_gates)
     seq = go.ecd_sequence(n_gates, N_FOCK, disp_method=method)
     psi0 = _low_kets(5)
     out = _run(seq, _ecd_flat(thetas, phis, betas), psi0)
     assert out.shape == (len(psi0), 2, N_FOCK)
     for k, ket in enumerate(psi0):
-        mirror = es.ecd_propagate(thetas, phis, betas, N_FOCK, psi0=ket)
+        mirror = _ref_ecd_history(thetas, phis, betas, ket)[-1]
         np.testing.assert_allclose(out[k], mirror, atol=1e-10)
 
 
 @pytest.mark.parametrize("method", DISP_METHODS)
-def test_ecd_history_matches_mirror_and_conserves_norm(method):
+def test_ecd_history_matches_reference_and_conserves_norm(method):
     n_gates = 3
     thetas, phis, betas = _ecd_params(n_gates, seed=6)
     seq = go.ecd_sequence(n_gates, N_FOCK, disp_method=method)
@@ -210,42 +257,8 @@ def test_ecd_history_matches_mirror_and_conserves_norm(method):
     np.testing.assert_allclose(hist[-1], _run(seq, flat, psi0), atol=1e-12)
     np.testing.assert_allclose(np.linalg.norm(hist, axis=(-2, -1)), 1.0, atol=1e-12)
     for k, ket in enumerate(psi0):
-        _, mirror = es.ecd_propagate(thetas, phis, betas, N_FOCK, psi0=ket, return_history=True)
+        mirror = _ref_ecd_history(thetas, phis, betas, ket)
         np.testing.assert_allclose(hist[:, k], mirror, atol=1e-10)
-
-
-@pytest.mark.parametrize("n_gates", [1, 3])
-def test_ecd_full_unitary_is_unitary_and_matches_propagation(n_gates):
-    thetas, phis, betas = _ecd_params(n_gates, seed=10 + n_gates)
-    unitary = es.ecd_full_unitary(thetas, phis, betas, N_FOCK)
-    np.testing.assert_allclose(unitary.conj().T @ unitary, np.eye(2 * N_FOCK), atol=1e-12)
-    for ket in _low_kets(8):
-        joint = np.kron(np.array([1, 0], dtype=complex), ket)  # kron(qubit, cavity)
-        expected = es.ecd_propagate(thetas, phis, betas, N_FOCK, psi0=ket)
-        np.testing.assert_allclose((unitary @ joint).reshape(2, N_FOCK), expected, atol=1e-10)
-
-
-@pytest.mark.parametrize("n_gates", [1, 2, 3])
-def test_branch_expansion_reconstructs_unitary(n_gates):
-    thetas, phis, betas = _ecd_params(n_gates, seed=20 + n_gates)
-    branches = es.branch_expansion(thetas, phis, betas)
-    assert len(branches) == 2**n_gates
-
-    unitary = es.ecd_full_unitary(thetas, phis, betas, N_FOCK).reshape(2, N_FOCK, 2, N_FOCK)
-    rebuilt = es.reconstruct_unitary(branches, N_FOCK).reshape(2, N_FOCK, 2, N_FOCK)
-    np.testing.assert_allclose(
-        rebuilt[:, :LOW, :, :LOW], unitary[:, :LOW, :, :LOW], atol=1e-10
-    )
-
-    projected = es.reconstruct_projected(branches, N_FOCK)
-    np.testing.assert_allclose(projected[:LOW, :LOW], unitary[0, :LOW, 0, :LOW], atol=1e-10)
-
-    # <g|U|g>|0> in closed form vs. the JAX propagator from vacuum.
-    seq = go.ecd_sequence(n_gates, N_FOCK)
-    vac = np.zeros((1, N_FOCK), dtype=complex)
-    vac[0, 0] = 1.0
-    psi_g = _run(seq, _ecd_flat(thetas, phis, betas), vac)[0, 0]
-    np.testing.assert_allclose(es.fock_coefficients(branches, max_n=8), psi_g[:8], atol=1e-10)
 
 
 def test_ecd_parameter_layout():
@@ -274,16 +287,6 @@ def test_ecd_ground_overlap_scores_only_the_ground_block():
     targets = jnp.asarray(_low_kets(12))
     expected = np.einsum("kd,kd->k", np.conj(targets), np.asarray(psi)[:, 0, :])
     np.testing.assert_allclose(seq.overlaps(psi, targets), expected, atol=1e-14)
-
-
-def test_to_joint_ket_is_cavity_first():
-    rng = np.random.default_rng(13)
-    blocks = rng.normal(size=(2, 5)) + 1j * rng.normal(size=(2, 5))
-    joint = go.to_joint_ket(blocks)
-    assert joint.shape == (10,)
-    for n_cav in range(5):
-        for s_qubit in range(2):
-            assert joint[2 * n_cav + s_qubit] == blocks[s_qubit, n_cav]
 
 
 # ---------------------------------------------------------------------------
@@ -350,7 +353,7 @@ def test_snap_with_zero_phases_collapses_to_one_displacement(method):
     seq = go.snap_sequence(n_gates, N_FOCK, disp_method=method)
     psi0 = _low_kets(46)
     out = _run(seq, _snap_flat(np.zeros((n_gates, N_FOCK)), alphas), psi0)
-    total, phase = es.displacement_product(alphas)
+    total, phase = _displacement_product(alphas)
     expected = np.exp(1j * phase) * (psi0 @ _ref_displacement(total).T)
     np.testing.assert_allclose(out, expected, atol=1e-10)
 

@@ -27,10 +27,7 @@ qubit rotations, i.e. :math:`4N+2` real parameters. Conventions:
 The qubit is *not* represented explicitly. Because ECD and the rotations are
 2x2 block operators on the qubit index, the state is carried as a pair of
 cavity kets ``(psi_g, psi_e)``, halving memory and the cost of every
-displacement relative to a ``2 * n_fock`` joint space. When a joint vector is
-needed (e.g. to hand a state to ``jaxquantum``), the cavity-first convention
-``index = n_cav * 2 + s_qubit`` is used, matching
-:func:`hamiltonians.cavity_transmon_drift`.
+displacement relative to a ``2 * n_fock`` joint space.
 
 **SNAP + displacements** (Heeres et al., *PRL* **115**, 137002 (2015);
 Fösel, Krastanov et al., arXiv:2004.14256)
@@ -86,71 +83,36 @@ Run with 64-bit precision enabled::
     import jax
     jax.config.update("jax_enable_x64", True)
 
-Displacements (ECD and SNAP sets) are built by one of two methods, selected
-with the builders' ``disp_method`` argument:
-
-``"expm"`` (default)
-    :math:`D(\alpha) = \exp(\alpha a^\dagger - \alpha^* a)` of the truncated
-    generator. Exactly unitary in the truncated space.
-``"quadrature"``
-    Exact BCH factorization :math:`D(\alpha) = e^{-i x_0 p_0}
-    e^{i\sqrt{2} p_0 \hat{x}} e^{-i\sqrt{2} x_0 \hat{p}}` using
-    eigendecompositions of :math:`\hat x` and :math:`\hat p` precomputed once.
-    Also exactly unitary, benchmarked to the same truncation accuracy as
-    ``"expm"``, roughly 4x faster to evaluate, and its gradients flow through a
-    diagonal exponential rather than an ``expm`` Frechet derivative. Recommended
-    for large seed batches or deep circuits.
-
-``"fixed"``
-    The ``"quadrature"`` factorization applied to the state without forming
-    :math:`D`. With :math:`W = V_x^\dagger V_p` precomputed,
-
-    .. math::
-        D(\alpha)\psi = e^{-i x_0 p_0}\, V_x\, e^{i\sqrt2 p_0 w_x} \odot
-            \Big(W \big(e^{-i\sqrt2 x_0 w_p} \odot V_p^\dagger \psi\big)\Big),
-
-    three matrix-vector products per state instead of three matrix-matrix
-    products per gate (:func:`make_displacement_apply`). Identical to
-    ``"quadrature"`` up to round-off, smooth in ``Re alpha`` and ``Im alpha``,
-    and gradients flow through diagonal phases only. Recommended.
-
-A fourth possibility -- building :math:`\langle m|D(\alpha)|n\rangle` from its
-closed form -- is deliberately *not* offered. Those are the exact
-infinite-dimensional matrix elements restricted to the truncated block, so the
-resulting matrix is not unitary (numerically ``||D^dag D - I|| ~ 0.5`` at
-``n_fock = 40``); norm is not conserved and an optimizer will happily exploit
-that to report fidelities it has not achieved.
-
-Squeezers :math:`S(r, \varphi)` (CSQ set) are selected by
-:func:`csq_sequence`'s ``sq_method`` argument:
+Displacements (ECD and SNAP sets) are applied by one of two methods, selected
+with the builders' ``disp_method`` argument. Both are exactly unitary in the
+truncated space and agree away from the Fock cutoff; they differ only in how
+the truncation edge is treated.
 
 ``"fixed"`` (default)
-    Applied to the state without forming :math:`S`. The truncated generator is
-    linear in :math:`r`, so its eigenbasis is fixed, and the phase enters by
-    conjugation with :math:`e^{i\varphi\hat n/2}`:
+    The BCH factorization of :func:`operators.make_displacement_apply`, applied
+    to the state without forming :math:`D`: three matrix-vector products per
+    state, smooth in ``Re alpha`` and ``Im alpha``, with gradients flowing
+    through diagonal phases only.
+``"exact"``
+    :math:`D(\alpha) = \exp(\alpha a^\dagger - \alpha^* a)` of the truncated
+    generator (:func:`operators.make_displacement`). Slower, and not
+    differentiable at :math:`\alpha = 0`; use it to reproduce results that were
+    optimized with it.
 
-    .. math::
-        S(r, \varphi) = e^{i\varphi\hat n/2}\, V e^{-i r\lambda} V^\dagger\,
-                         e^{-i\varphi\hat n/2},
+Squeezers (CSQ set) are applied by :func:`operators.make_squeeze_apply`, also
+without forming the operator.
 
-    with :math:`(\lambda, V)` the eigendecomposition of
-    :math:`\tfrac{i}{2}(a^2 - a^{\dagger 2})`, computed once
-    (:func:`make_squeeze_apply`). Exact in the truncated space (identical to
-    ``"eig"`` up to round-off), two matrix-vector products per branch instead of
-    an ``eigh`` per gate, and gradients flow through diagonal phases only, so the
-    near-degenerate even/odd spectrum never enters a derivative.
-
-``"eig"`` (default)
-    Eigendecomposition of the Hermitian matrix :math:`iG(r,\varphi)`, where
-    :math:`G` is the truncated anti-Hermitian generator, followed by
-    :math:`e^{G} = V e^{-i\Lambda} V^\dagger`. Exactly unitary in the
-    truncated space and identical to ``"expm"`` up to round-off.
-``"expm"``
-    Direct matrix exponential of the truncated generator.
+Building :math:`\langle m|D(\alpha)|n\rangle` from its closed form is
+deliberately *not* offered. Those are the exact infinite-dimensional matrix
+elements restricted to the truncated block, so the resulting matrix is not
+unitary (numerically ``||D^dag D - I|| ~ 0.5`` at ``n_fock = 40``); norm is not
+conserved and an optimizer will happily exploit that to report fidelities it
+has not achieved.
 """
 
 from __future__ import annotations
 
+import inspect
 import time
 import warnings
 from collections.abc import Callable
@@ -158,6 +120,7 @@ from dataclasses import dataclass, field
 
 import jax
 import jax.numpy as jnp
+import jaxquantum as jqt
 import numpy as np
 from jax import lax, value_and_grad, vmap
 from scipy.optimize import minimize
@@ -165,16 +128,9 @@ from scipy.optimize import minimize
 from .operators import (
     make_displacement,
     make_displacement_apply,
-    make_squeeze,
     make_squeeze_apply,
     qubit_rotation,
 )
-
-try:
-    import jaxquantum as jqt
-except ImportError:  # pragma: no cover
-    jqt = None
-
 
 __all__ = [
     "GateBounds",
@@ -185,13 +141,9 @@ __all__ = [
     "ecd_sequence",
     "snap_sequence",
     "csq_sequence",
+    "build_sequence",
     "optimize_gate_sequence",
-    "make_displacement",
-    "make_displacement_apply",
-    "make_squeeze",
-    "make_squeeze_apply",
     "sequence_history",
-    "to_joint_ket",
 ]
 
 
@@ -393,6 +345,12 @@ class GateOptResult:
     covered, ``a*/theta_B``) and ``deviation_schedule`` (distance from the
     uniform-speed brachistochrone point). Always computed, penalized only when
     ``TrajectoryPenalty.geodesic_weight > 0``."""
+    initial_state: np.ndarray | None = None
+    """The cavity ket(s) the circuit was optimized from, ``(K, n_fock)``."""
+    ansatz: dict = field(default_factory=dict)
+    """Builder options a loaded result was rebuilt with (see :mod:`gate_results`)."""
+    metadata: dict = field(default_factory=dict)
+    """Free-form fields stored alongside a saved result."""
 
     def summary(self) -> str:
         lines = [
@@ -418,6 +376,13 @@ class GateOptResult:
             lines.append(f"{key:<16}: {val:.3e}")
         return "\n".join(lines)
 
+    def repropagate(self, psi_init=None) -> np.ndarray:
+        """State after every gate from the stored parameters; see :func:`sequence_history`."""
+        psi = self.initial_state if psi_init is None else psi_init
+        if psi is None:
+            raise ValueError("this result has no initial_state; pass psi_init explicitly")
+        return sequence_history(self, psi)
+
     def final_qarray(self):
         """Return the final cavity state(s) as a ``jaxquantum.Qarray``.
 
@@ -425,29 +390,12 @@ class GateOptResult:
         renormalized; inspect ``final_states`` directly if you need the ``|e>``
         component or the joint state.
         """
-        if jqt is None:  # pragma: no cover
-            raise ImportError("jaxquantum is required for final_qarray().")
         states = np.atleast_2d(self.final_states)
         if states.ndim == 3:  # (K, 2, d) -> take |g> block
             states = states[:, 0, :]
         if states.shape[0] == 1:
             return jqt.Qarray.create(states[0].reshape(-1, 1)).unit()
         return [jqt.Qarray.create(s.reshape(-1, 1)).unit() for s in states]
-
-
-# ---------------------------------------------------------------------------
-# State layout
-# ---------------------------------------------------------------------------
-
-
-def to_joint_ket(psi_blocks: np.ndarray) -> np.ndarray:
-    """Flatten a block state ``(..., 2, n_fock)`` into a cavity-first joint ket.
-
-    The output index convention is ``index = n_cav * 2 + s_qubit``, i.e.
-    ``kron(cavity, qubit)``, matching :mod:`hamiltonians`.
-    """
-    arr = np.asarray(psi_blocks)
-    return np.swapaxes(arr, -1, -2).reshape(*arr.shape[:-2], -1)
 
 
 # ---------------------------------------------------------------------------
@@ -465,7 +413,7 @@ def _as_ket_batch(state, n_fock: int | None = None, name: str = "state"):
         rows = [_as_ket_batch(s, n_fock, name) for s in state]
         data = jnp.concatenate(rows, axis=0)
     else:
-        if jqt is not None and isinstance(state, jqt.Qarray):
+        if isinstance(state, jqt.Qarray):
             data = state.data
         else:
             data = state
@@ -730,6 +678,10 @@ class GateSequence:
         layer axis, for the smoothness penalty.
     rotation_angles : callable
         ``flat -> array`` of qubit rotation angles (empty for SNAP).
+    options : dict
+        Builder options that change propagation (``echoed``, ``qubit_target``,
+        ``n_snap``, ``n_leak``), recorded so :mod:`gate_results` can rebuild
+        the sequence from a saved file.
     """
 
     name: str
@@ -750,159 +702,112 @@ class GateSequence:
     describe: Callable
     controls: Callable
     rotation_angles: Callable
+    options: dict = field(default_factory=dict)
 
 
-def _apply_conditional(psi, op, echoed: bool):
-    r"""Apply ``op`` on |g>, ``op^dag`` on |e>, optionally with a qubit flip.
-
-    ``echoed=False``: ``op |g><g| + op^dag |e><e|``.
-    ``echoed=True`` : ``op |e><g| + op^dag |g><e|``.
-    States are row vectors ``(K, 2, d)``, so ``op psi == psi @ op.T``.
-    """
-    psi_g, psi_e = psi[:, 0, :], psi[:, 1, :]
-    if echoed:
-        out_g = psi_e @ op.conj()  # op^dag psi_e
-        out_e = psi_g @ op.T  # op psi_g
-    else:
-        out_g = psi_g @ op.T
-        out_e = psi_e @ op.conj()
-    return jnp.stack([out_g, out_e], axis=1)
-
-
-def _build_qubit_block_sequence(
+def _layered_sequence(
     *,
     name: str,
     n_gates: int,
     n_fock: int,
-    n_gate_params: int,
-    cond_steps: Callable,
-    strengths: Callable,
+    n_params: int,
+    has_qubit: bool,
     strength_kind: str,
-    gate_controls: Callable,
-    init_gate: Callable,
-    describe_gate: Callable,
-    qubit_target: str,
+    qubit_target: str | None,
     n_leak: int,
+    unpack: Callable,
+    to_layers: Callable,
+    first: Callable,
+    layer: Callable,
+    leak_after_first: bool,
+    strengths: Callable,
+    init: Callable,
+    describe: Callable,
+    controls: Callable,
+    rotation_angles: Callable,
+    options: dict,
 ) -> GateSequence:
-    r"""Shared skeleton for ``R_{N+1} prod_i C_i R_i`` with qubit-block states.
-
-    Flat layout: ``[(theta, phi) x (N+1), gate params x N]``.
+    r"""Shared scaffold: one opening gate, then ``n_gates`` identical layers.
 
     Parameters
     ----------
-    cond_steps : callable
-        ``(psi, gate_params) -> list of states`` after each conditional
-        sub-gate of one layer. The last entry is the layer output. Leakage is
-        accumulated after every sub-gate.
+    unpack : callable
+        ``flat -> pytree`` of gate parameters, in the set's natural grouping.
+    to_layers : callable
+        ``flat -> (head, layers)``: the opening gate's parameters and a pytree
+        of per-layer parameters with leading axis ``n_gates``.
+    first : callable
+        ``(psi, head) -> psi``, the opening gate.
+    layer : callable
+        ``(psi, layer_params) -> list[(psi, counts_leak)]``, the state after
+        each gate of one layer and whether leakage is accumulated there.
+    leak_after_first : bool
+        Whether the opening gate contributes to leakage. When it does, the
+        state after it is also probed (it moves the cavity).
     strengths : callable
-        ``(N, n_gate_params) -> 1-D array`` of gate strengths to cap.
-    gate_controls : callable
-        ``(N, n_gate_params) -> list[(array, is_angle)]``.
-    init_gate : callable
-        ``key -> (N, n_gate_params)``.
-    describe_gate : callable
-        ``np (N, n_gate_params) -> dict``.
+        ``flat -> 1-D array`` of gate strengths to cap.
     """
-    if qubit_target not in ("ground", "traced"):
-        raise ValueError(f"unknown qubit_target {qubit_target!r}")
-
-    n_rot = n_gates + 1
-    n_params = 2 * n_rot + n_gate_params * n_gates
-
-    def unpack(flat):
-        flat = jnp.asarray(flat)
-        rots = flat[: 2 * n_rot].reshape(n_rot, 2)
-        gps = flat[2 * n_rot :].reshape(n_gates, n_gate_params)
-        return rots, gps
 
     def lift(psi_cav):
-        """(K, d) cavity kets -> (K, 2, d) with the qubit in |g>."""
-        zeros = jnp.zeros_like(psi_cav)
-        return jnp.stack([psi_cav, zeros], axis=1)
-
-    def apply_rot(psi, theta, phi):
-        rot = qubit_rotation(theta, phi)
-        return jnp.einsum("ij,kjd->kid", rot, psi)
+        """(K, d) cavity kets -> internal state; adds the qubit block in |g>."""
+        if not has_qubit:
+            return psi_cav
+        return jnp.stack([psi_cav, jnp.zeros_like(psi_cav)], axis=1)
 
     def propagate(flat, psi0, probes=None):
-        rots, gps = unpack(flat)
+        head, layers = to_layers(flat)
         track = probes is not None
-        psi = apply_rot(psi0, rots[0, 0], rots[0, 1])
-        leak0 = jnp.zeros((), dtype=jnp.real(psi).dtype)
+        psi = first(psi0, head)
+        leak = _leakage(psi, n_leak) if leak_after_first else jnp.zeros((), jnp.real(psi).dtype)
+        psi_first = psi
 
-        def step(carry, layer):
+        def step(carry, layer_params):
             psi, leak = carry
-            gp, rot = layer
-            for sub in cond_steps(psi, gp):
-                leak = leak + _leakage(sub, n_leak)
+            for sub, counts_leak in layer(psi, layer_params):
+                if counts_leak:
+                    leak = leak + _leakage(sub, n_leak)
                 psi = sub
-            psi = apply_rot(psi, rot[0], rot[1])
-            out = _probe_amplitudes(psi, probes) if track else None
-            return (psi, leak), out
+            return (psi, leak), (_probe_amplitudes(psi, probes) if track else None)
 
-        (psi, leak), amps = lax.scan(step, (psi, leak0), (gps, rots[1:]))
+        (psi, leak), amps = lax.scan(step, (psi, leak), layers)
         if track:
-            assert amps is not None
-            amps = jnp.concatenate([_probe_amplitudes(psi0, probes)[None], amps])
-        return psi, leak, strengths(gps), amps
+            opening = [psi0, psi_first] if leak_after_first else [psi0]
+            amps = jnp.concatenate(
+                [jnp.stack([_probe_amplitudes(x, probes) for x in opening]), amps]
+            )
+        return psi, leak, strengths(flat), amps
 
     def history(flat, psi0):
-        """States after every gate (rotations and each conditional sub-gate)."""
-        rots, gps = unpack(flat)
-        psi = psi0
-        out = [psi]
-        psi = apply_rot(psi, rots[0, 0], rots[0, 1])
-        out.append(psi)
+        """The input state followed by the state after every gate."""
+        head, layers = to_layers(flat)
+        psi = first(psi0, head)
+        out = [psi0, psi]
         for i in range(n_gates):
-            for sub in cond_steps(psi, gps[i]):
-                out.append(sub)
-                psi = sub
-            psi = apply_rot(psi, rots[i + 1, 0], rots[i + 1, 1])
-            out.append(psi)
+            for psi, _ in layer(psi, jax.tree.map(lambda x: x[i], layers)):
+                out.append(psi)
         return jnp.stack(out)
 
     def overlaps(psi_final, targets):
-        if qubit_target != "ground":
+        if qubit_target == "traced":
             raise ValueError(
                 "overlaps are only defined for qubit_target='ground'; "
                 "batch_reduction='coherent' is incompatible with 'traced'."
             )
-        return jnp.sum(jnp.conj(targets) * psi_final[:, 0, :], axis=-1)
+        block = psi_final[:, 0, :] if has_qubit else psi_final
+        return jnp.sum(jnp.conj(targets) * block, axis=-1)
 
     def fidelity(psi_final, targets, reduction):
-        if qubit_target == "ground":
-            return _reduce_fidelity(overlaps(psi_final, targets), reduction)
-        # traced: F_k = <t| rho_cav |t> = |<t|psi_g>|^2 + |<t|psi_e>|^2
-        return _traced_fidelity(psi_final, targets)
-
-    def init(key):
-        k_rot, k_phi, k_gate = jax.random.split(key, 3)
-        thetas = jax.random.uniform(k_rot, (n_rot,), minval=0.0, maxval=jnp.pi)
-        phis = jax.random.uniform(k_phi, (n_rot,), minval=-jnp.pi, maxval=jnp.pi)
-        gps = init_gate(k_gate)
-        return jnp.concatenate([jnp.stack([thetas, phis], axis=-1).ravel(), gps.ravel()])
-
-    def describe(flat):
-        rots, gps = unpack(flat)
-        rots = np.asarray(rots)
-        out = {"thetas": rots[:, 0], "phis": rots[:, 1]}
-        out.update(describe_gate(np.asarray(gps)))
-        return out
-
-    def controls(flat):
-        rots, gps = unpack(flat)
-        return [(rots[:, 0:1], False), (rots[:, 1:2], True), *gate_controls(gps)]
-
-    def rotation_angles(flat):
-        rots, _ = unpack(flat)
-        return rots[:, 0]
+        if qubit_target == "traced":
+            # F_k = <t| rho_cav |t> = |<t|psi_g>|^2 + |<t|psi_e>|^2
+            return _traced_fidelity(psi_final, targets)
+        return _reduce_fidelity(overlaps(psi_final, targets), reduction)
 
     return GateSequence(
         name=name,
         n_gates=n_gates,
         n_fock=n_fock,
         n_params=n_params,
-        has_qubit=True,
+        has_qubit=has_qubit,
         strength_kind=strength_kind,
         qubit_target=qubit_target,
         n_leak=n_leak,
@@ -916,14 +821,113 @@ def _build_qubit_block_sequence(
         describe=describe,
         controls=controls,
         rotation_angles=rotation_angles,
+        options={"n_leak": n_leak, **options},
     )
+
+
+def _qubit_block_sequence(
+    *,
+    name: str,
+    n_gates: int,
+    n_fock: int,
+    n_gate_params: int,
+    conditional: Callable,
+    strengths: Callable,
+    strength_kind: str,
+    gate_controls: Callable,
+    init_gate: Callable,
+    describe_gate: Callable,
+    qubit_target: str,
+    n_leak: int,
+    options: dict | None = None,
+) -> GateSequence:
+    r"""``R_{N+1} prod_i C_i R_i`` on qubit-block states ``(K, 2, d)``.
+
+    Flat layout: ``[(theta, phi) x (N+1), gate params x N]``. ``conditional``
+    is ``(psi, gate_params) -> psi``, the qubit-conditional cavity gate.
+    """
+    if qubit_target not in ("ground", "traced"):
+        raise ValueError(f"unknown qubit_target {qubit_target!r}")
+
+    n_rot = n_gates + 1
+
+    def unpack(flat):
+        flat = jnp.asarray(flat)
+        rots = flat[: 2 * n_rot].reshape(n_rot, 2)
+        gps = flat[2 * n_rot :].reshape(n_gates, n_gate_params)
+        return rots, gps
+
+    def to_layers(flat):
+        rots, gps = unpack(flat)
+        return rots[0], (gps, rots[1:])
+
+    def rotate(psi, rot):
+        return jnp.einsum("ij,kjd->kid", qubit_rotation(rot[0], rot[1]), psi)
+
+    def layer(psi, layer_params):
+        gp, rot = layer_params
+        psi = conditional(psi, gp)
+        return [(psi, True), (rotate(psi, rot), False)]
+
+    def init(key):
+        k_rot, k_phi, k_gate = jax.random.split(key, 3)
+        thetas = jax.random.uniform(k_rot, (n_rot,), minval=0.0, maxval=jnp.pi)
+        phis = jax.random.uniform(k_phi, (n_rot,), minval=-jnp.pi, maxval=jnp.pi)
+        gps = init_gate(k_gate)
+        return jnp.concatenate([jnp.stack([thetas, phis], axis=-1).ravel(), gps.ravel()])
+
+    def describe(flat):
+        rots, gps = unpack(flat)
+        rots = np.asarray(rots)
+        return {"thetas": rots[:, 0], "phis": rots[:, 1], **describe_gate(np.asarray(gps))}
+
+    def controls(flat):
+        rots, gps = unpack(flat)
+        return [(rots[:, 0:1], False), (rots[:, 1:2], True), *gate_controls(gps)]
+
+    return _layered_sequence(
+        name=name,
+        n_gates=n_gates,
+        n_fock=n_fock,
+        n_params=2 * n_rot + n_gate_params * n_gates,
+        has_qubit=True,
+        strength_kind=strength_kind,
+        qubit_target=qubit_target,
+        n_leak=n_leak,
+        unpack=unpack,
+        to_layers=to_layers,
+        first=rotate,
+        layer=layer,
+        leak_after_first=False,
+        strengths=lambda flat: strengths(unpack(flat)[1]),
+        init=init,
+        describe=describe,
+        controls=controls,
+        rotation_angles=lambda flat: unpack(flat)[0][:, 0],
+        options={"qubit_target": qubit_target, **(options or {})},
+    )
+
+
+def _displacer(n_fock: int, method: str) -> Callable:
+    """``(psi, alpha, adjoint=False) -> D(alpha) psi`` for a ``disp_method``."""
+    if method == "fixed":
+        return make_displacement_apply(n_fock)
+    if method == "exact":
+        displace = make_displacement(n_fock)
+
+        def apply(psi, alpha, adjoint: bool = False):
+            d_op = displace(alpha)
+            return psi @ (d_op.conj() if adjoint else d_op.T)  # row kets
+
+        return apply
+    raise ValueError(f"unknown disp_method {method!r}; expected 'fixed' or 'exact'")
 
 
 def ecd_sequence(
     n_gates: int,
     n_fock: int,
     *,
-    disp_method: str = "expm",
+    disp_method: str = "fixed",
     echoed: bool = True,
     qubit_target: str = "ground",
     n_leak: int = 5,
@@ -938,9 +942,8 @@ def ecd_sequence(
         rotations.
     n_fock : int
         Fock-space truncation.
-    disp_method : {"expm", "quadrature", "fixed"}
-        How to build / apply ``D(alpha)``; see the module docstring.
-        ``"fixed"`` is ``"quadrature"`` applied without forming the matrix.
+    disp_method : {"fixed", "exact"}
+        How ``D(alpha)`` is applied; see the module docstring.
     echoed : bool
         ``True`` for the echoed conditional displacement (includes the qubit
         flip), ``False`` for the bare conditional displacement
@@ -956,44 +959,29 @@ def ecd_sequence(
     init_disp_scale : float
         Standard deviation of the random initial ``Re beta``, ``Im beta``.
     """
-    if disp_method == "fixed":
-        disp_apply = make_displacement_apply(n_fock)
+    displace = _displacer(n_fock, disp_method)
 
-        def cond_steps(psi, gp):
-            # Same action as _apply_conditional(psi, D(beta/2), echoed).
-            half = (gp[0] + 1j * gp[1]) / 2
-            psi_g, psi_e = psi[:, 0, :], psi[:, 1, :]
-            if echoed:
-                out_g = disp_apply(psi_e, half, adjoint=True)
-                out_e = disp_apply(psi_g, half)
-            else:
-                out_g = disp_apply(psi_g, half)
-                out_e = disp_apply(psi_e, half, adjoint=True)
-            return [jnp.stack([out_g, out_e], axis=1)]
+    def conditional(psi, gp):
+        # D(beta/2) on one branch and D(beta/2)^dag on the other; echoed swaps them.
+        half = (gp[0] + 1j * gp[1]) / 2
+        forward = displace(psi[:, 0, :], half)
+        backward = displace(psi[:, 1, :], half, adjoint=True)
+        return jnp.stack([backward, forward] if echoed else [forward, backward], axis=1)
 
-    else:
-        displace = make_displacement(n_fock, disp_method)
-
-        def cond_steps(psi, gp):
-            beta = gp[0] + 1j * gp[1]
-            return [_apply_conditional(psi, displace(beta / 2), echoed)]
-
-    def init_gate(key):
-        return init_disp_scale * jax.random.normal(key, (n_gates, 2))
-
-    return _build_qubit_block_sequence(
+    return _qubit_block_sequence(
         name="ecd",
         n_gates=n_gates,
         n_fock=n_fock,
         n_gate_params=2,
-        cond_steps=cond_steps,
+        conditional=conditional,
         strengths=lambda gps: jnp.linalg.norm(gps, axis=-1),
         strength_kind="disp",
         gate_controls=lambda gps: [(gps, False)],
-        init_gate=init_gate,
+        init_gate=lambda key: init_disp_scale * jax.random.normal(key, (n_gates, 2)),
         describe_gate=lambda gps: {"betas": gps[:, 0] + 1j * gps[:, 1]},
         qubit_target=qubit_target,
         n_leak=n_leak,
+        options={"disp_method": disp_method, "echoed": echoed},
     )
 
 
@@ -1001,7 +989,6 @@ def csq_sequence(
     n_gates: int,
     n_fock: int,
     *,
-    sq_method: str = "fixed",
     qubit_target: str = "ground",
     n_leak: int = 5,
     init_squeeze_scale: float = 0.2,
@@ -1021,11 +1008,6 @@ def csq_sequence(
         rotations.
     n_fock : int
         Fock-space truncation.
-    sq_method : {"fixed", "eig", "expm"}
-        How to apply ``S(r, phi)``. ``"fixed"`` (default) applies it in a
-        precomputed eigenbasis without forming the matrix
-        (:func:`make_squeeze_apply`); ``"eig"`` and ``"expm"`` build the full
-        matrix per gate (:func:`make_squeeze`). All three agree to round-off.
     qubit_target : {"ground", "traced"}
         As in :func:`ecd_sequence`.
     n_leak : int
@@ -1035,27 +1017,7 @@ def csq_sequence(
         Standard deviation of the random initial ``r``. Phases are drawn
         uniformly on ``[-pi, pi)``.
     """
-    if sq_method == "fixed":
-        squeeze_apply = make_squeeze_apply(n_fock)
-
-        def cond_steps(psi, gp):
-            # Both qubit branches in one pass: phase phi0 on |g>, phi1 on |e>.
-            return [squeeze_apply(psi, gp[0], gp[1:3])]
-
-    else:
-        squeeze = make_squeeze(n_fock, sq_method)
-
-        def cond_steps(psi, gp):
-            r, phi0, phi1 = gp[0], gp[1], gp[2]
-            out_g = psi[:, 0, :] @ squeeze(r, phi0).T
-            out_e = psi[:, 1, :] @ squeeze(r, phi1).T
-            return [jnp.stack([out_g, out_e], axis=1)]
-
-    def strengths(gps):
-        return jnp.abs(gps[:, 0])
-
-    def gate_controls(gps):
-        return [(gps[:, 0:1], False), (gps[:, 1:3], True)]
+    squeeze = make_squeeze_apply(n_fock)
 
     def init_gate(key):
         k_r, k_p = jax.random.split(key)
@@ -1072,15 +1034,16 @@ def csq_sequence(
             "axis1": gps[:, 2] / 2,
         }
 
-    return _build_qubit_block_sequence(
+    return _qubit_block_sequence(
         name="csq",
         n_gates=n_gates,
         n_fock=n_fock,
         n_gate_params=3,
-        cond_steps=cond_steps,
-        strengths=strengths,
+        # Both qubit branches in one pass: phase phi0 on |g>, phi1 on |e>.
+        conditional=lambda psi, gp: squeeze(psi, gp[0], gp[1:3]),
+        strengths=lambda gps: jnp.abs(gps[:, 0]),
         strength_kind="squeeze",
-        gate_controls=gate_controls,
+        gate_controls=lambda gps: [(gps[:, 0:1], False), (gps[:, 1:3], True)],
         init_gate=init_gate,
         describe_gate=describe_gate,
         qubit_target=qubit_target,
@@ -1092,12 +1055,14 @@ def snap_sequence(
     n_gates: int,
     n_fock: int,
     *,
-    disp_method: str = "expm",
+    disp_method: str = "fixed",
     n_snap: int | None = None,
     n_leak: int = 5,
     init_disp_scale: float = 1.0,
 ) -> GateSequence:
     r"""SNAP + displacements, sandwiched as ``D S D S ... D``.
+
+    Flat layout: ``[phases x N, (Re alpha, Im alpha) x (N+1)]``.
 
     Parameters
     ----------
@@ -1105,9 +1070,8 @@ def snap_sequence(
         Number of SNAP gates; the circuit has ``n_gates + 1`` displacements.
     n_fock : int
         Fock-space truncation.
-    disp_method : {"expm", "quadrature", "fixed"}
-        How to build / apply ``D(alpha)``; see the module docstring.
-        ``"fixed"`` is ``"quadrature"`` applied without forming the matrix.
+    disp_method : {"fixed", "exact"}
+        How ``D(alpha)`` is applied; see the module docstring.
     n_snap : int or None
         Number of Fock phases optimized per SNAP gate. ``None`` (default)
         optimizes all ``n_fock`` phases. A smaller value pins the phases of
@@ -1123,77 +1087,27 @@ def snap_sequence(
     if not 1 <= n_snap_eff <= n_fock:
         raise ValueError(f"n_snap must lie in [1, n_fock]; got {n_snap}")
 
-    if disp_method == "fixed":
-        disp_apply = make_displacement_apply(n_fock)
-    else:
-        displace = make_displacement(n_fock, disp_method)
+    displace = _displacer(n_fock, disp_method)
     n_disp = n_gates + 1
-    n_params = n_gates * n_snap_eff + 2 * n_disp
+    n_theta = n_gates * n_snap_eff
     pad = n_fock - n_snap_eff
 
     def unpack(flat):
         flat = jnp.asarray(flat)
-        n_theta = n_gates * n_snap_eff
-        thetas = flat[:n_theta].reshape(n_gates, n_snap_eff)
-        alphas = flat[n_theta:].reshape(n_disp, 2)
-        return thetas, alphas
+        return flat[:n_theta].reshape(n_gates, n_snap_eff), flat[n_theta:].reshape(n_disp, 2)
 
-    def lift(psi_cav):
-        return psi_cav
+    def to_layers(flat):
+        thetas, alphas = unpack(flat)
+        return alphas[0], (thetas, alphas[1:])
 
-    def apply_snap(psi, theta):
+    def apply_disp(psi, alpha_ri):
+        return displace(psi, alpha_ri[0] + 1j * alpha_ri[1])
+
+    def layer(psi, layer_params):
+        theta, alpha_ri = layer_params
         phases = jnp.concatenate([theta, jnp.zeros((pad,), dtype=theta.dtype)])
-        return psi * jnp.exp(1j * phases)[None, :]
-
-    def apply_disp(psi, alpha):
-        if disp_method == "fixed":
-            return disp_apply(psi, alpha)
-        return psi @ displace(alpha).T
-
-    def propagate(flat, psi0, probes=None):
-        thetas, alphas = unpack(flat)
-        track = probes is not None
-        psi = apply_disp(psi0, alphas[0, 0] + 1j * alphas[0, 1])
-        leak = _leakage(psi, n_leak)
-
-        def step(carry, layer):
-            psi, leak = carry
-            theta, alpha_ri = layer
-            psi = apply_snap(psi, theta)
-            psi = apply_disp(psi, alpha_ri[0] + 1j * alpha_ri[1])
-            leak = leak + _leakage(psi, n_leak)
-            out = _probe_amplitudes(psi, probes) if track else None
-            return (psi, leak), out
-
-        psi_d0 = psi
-        (psi, leak), amps = lax.scan(step, (psi, leak), (thetas, alphas[1:]))
-        if track:
-            assert amps is not None
-            head = jnp.stack([_probe_amplitudes(psi0, probes), _probe_amplitudes(psi_d0, probes)])
-            amps = jnp.concatenate([head, amps])
-
-        disp_mags = jnp.linalg.norm(alphas, axis=-1)
-        return psi, leak, disp_mags, amps
-
-    def history(flat, psi0):
-        """States after every gate: ``(2*n_gates+2, K, n_fock)``."""
-        thetas, alphas = unpack(flat)
-        psi = psi0
-        out = [psi]
-        psi = apply_disp(psi, alphas[0, 0] + 1j * alphas[0, 1])
-        out.append(psi)
-        for i in range(n_gates):
-            psi = apply_snap(psi, thetas[i])
-            out.append(psi)
-            psi = apply_disp(psi, alphas[i + 1, 0] + 1j * alphas[i + 1, 1])
-            out.append(psi)
-        return jnp.stack(out)
-
-    def overlaps(psi_final, targets):
-        return jnp.sum(jnp.conj(targets) * psi_final, axis=-1)
-
-    def fidelity(psi_final, targets, reduction):
-        return _reduce_fidelity(overlaps(psi_final, targets), reduction)
+        psi = psi * jnp.exp(1j * phases)[None, :]
+        return [(psi, False), (apply_disp(psi, alpha_ri), True)]
 
     def init(key):
         k_theta, k_alpha = jax.random.split(key)
@@ -1204,39 +1118,51 @@ def snap_sequence(
     def describe(flat):
         thetas, alphas = unpack(flat)
         alphas = np.asarray(alphas)
-        return {
-            "snap_phases": np.asarray(thetas),
-            "alphas": alphas[:, 0] + 1j * alphas[:, 1],
-        }
+        return {"snap_phases": np.asarray(thetas), "alphas": alphas[:, 0] + 1j * alphas[:, 1]}
 
     def controls(flat):
         thetas, alphas = unpack(flat)
         return [(thetas, True), (alphas, False)]
 
-    def rotation_angles(flat):
-        _ = unpack(flat)
-        return jnp.zeros((0,))
-
-    return GateSequence(
+    return _layered_sequence(
         name="snap",
         n_gates=n_gates,
         n_fock=n_fock,
-        n_params=n_params,
+        n_params=n_theta + 2 * n_disp,
         has_qubit=False,
         strength_kind="disp",
         qubit_target=None,
         n_leak=n_leak,
         unpack=unpack,
-        lift=lift,
-        propagate=propagate,
-        history=history,
-        overlaps=overlaps,
-        fidelity=fidelity,
+        to_layers=to_layers,
+        first=apply_disp,
+        layer=layer,
+        leak_after_first=True,
+        strengths=lambda flat: jnp.linalg.norm(unpack(flat)[1], axis=-1),
         init=init,
         describe=describe,
         controls=controls,
-        rotation_angles=rotation_angles,
+        rotation_angles=lambda flat: jnp.zeros((0,)),
+        options={"disp_method": disp_method, "n_snap": n_snap_eff},
     )
+
+
+def build_sequence(gate_set: str, n_gates: int, n_fock: int, **ansatz) -> GateSequence:
+    """Build a :class:`GateSequence` from its gate-set name and builder options.
+
+    Options the gate set's builder does not take are ignored, so one ``ansatz``
+    dict can be passed for any gate set and files saved with options that have
+    since been removed still load.
+    """
+    try:
+        builder = {"ecd": ecd_sequence, "snap": snap_sequence, "csq": csq_sequence}[gate_set]
+    except KeyError:
+        raise ValueError(
+            f"unknown gate set {gate_set!r}; expected 'ecd', 'snap' or 'csq'"
+        ) from None
+    accepted = inspect.signature(builder).parameters
+    kwargs = {k: v for k, v in ansatz.items() if k in accepted and v is not None}
+    return builder(n_gates, n_fock, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -1344,7 +1270,7 @@ def optimize_gate_sequence(
     --------
     >>> import jax, jax.numpy as jnp, jaxquantum as jqt
     >>> jax.config.update("jax_enable_x64", True)
-    >>> from states import gkp_states
+    >>> from gkp_optimal_control.states import gkp_states
     >>> ell = jnp.sqrt(jnp.pi / 2)
     >>> gkp_0, _ = gkp_states(80, ell, 1j * ell, 0.4, 5)
     >>> res = optimize_gate_sequence(
@@ -1634,6 +1560,7 @@ def optimize_gate_sequence(
         penalties=penalties,
         qubit_purity=purity,
         geodesic=geo,
+        initial_state=np.asarray(psi_i),
     )
 
 
@@ -1656,97 +1583,3 @@ def sequence_history(result: GateOptResult, psi_init) -> np.ndarray:
     seq = result.sequence
     psi_i = _as_ket_batch(psi_init, seq.n_fock, "psi_init")
     return np.asarray(seq.history(jnp.asarray(result.flat_params), seq.lift(psi_i)))
-
-
-# ---------------------------------------------------------------------------
-# Smoke test
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    jax.config.update("jax_enable_x64", True)
-
-    n_fock = 30
-    vac = jnp.zeros(n_fock, dtype=jnp.complex128).at[0].set(1.0)
-
-    # Displacement methods must agree and be unitary.
-    for method in ("expm", "quadrature"):
-        d_op = make_displacement(n_fock, method)(1.0 + 0.5j)
-        err = jnp.abs(d_op.conj().T @ d_op - jnp.eye(n_fock)).max()
-        print(f"{method:>11}: ||D^dag D - I|| = {err:.2e}")
-    d_a = make_displacement(n_fock, "expm")(1.0 + 0.5j)
-    d_b = make_displacement(n_fock, "quadrature")(1.0 + 0.5j)
-    print(f"expm vs quadrature: {jnp.abs(d_a - d_b).max():.2e}")
-    psi_t = jnp.exp(1j * jnp.arange(n_fock)) / jnp.sqrt(n_fock)
-    d_c = make_displacement_apply(n_fock)
-    print(f"fixed vs quadrature: {jnp.abs(d_c(psi_t[None], 1.0 + 0.5j)[0] - d_b @ psi_t).max():.2e}"
-          f"  (adjoint {jnp.abs(d_c(psi_t[None], 1.0 + 0.5j, adjoint=True)[0] - d_b.conj().T @ psi_t).max():.2e})\n")
-
-    # Squeezer methods must agree and be unitary.
-    for method in ("expm", "eig"):
-        s_op = make_squeeze(n_fock, method)(0.4, 0.7)
-        err = jnp.abs(s_op.conj().T @ s_op - jnp.eye(n_fock)).max()
-        print(f"{method:>11}: ||S^dag S - I|| = {err:.2e}")
-    s_a = make_squeeze(n_fock, "expm")(0.4, 0.7)
-    s_b = make_squeeze(n_fock, "eig")(0.4, 0.7)
-    print(f"expm vs eig       : {jnp.abs(s_a - s_b).max():.2e}")
-    psi_t = jnp.exp(1j * jnp.arange(n_fock)) / jnp.sqrt(n_fock)
-    s_c = make_squeeze_apply(n_fock)(psi_t[None, :], 0.4, 0.7)[0]
-    print(f"fixed vs eig      : {jnp.abs(s_c - s_b @ psi_t).max():.2e}\n")
-
-    # Fock |2> with a shallow SNAP circuit.
-    fock2 = jnp.zeros(n_fock, dtype=jnp.complex128).at[2].set(1.0)
-    res_snap = optimize_gate_sequence(
-        snap_sequence(3, n_fock, n_snap=8),
-        vac,
-        fock2,
-        loss_type="log_infidelity",
-        optimizer=OptimizerConfig(n_seeds=6, n_adam_iters=600, seed=1),
-    )
-    print()
-
-    # Even cat with a shallow ECD circuit.
-    alpha = 1.5
-    n_vec = jnp.arange(n_fock, dtype=jnp.float64)
-    log_coh = n_vec * jnp.log(alpha) - 0.5 * jax.scipy.special.gammaln(n_vec + 1.0)
-    cat = jnp.exp(log_coh) * (1 + (-1.0) ** n_vec)  # even cat, unnormalized
-    cat = (cat / jnp.linalg.norm(cat)).astype(jnp.complex128)
-    res_ecd = optimize_gate_sequence(
-        ecd_sequence(4, n_fock, disp_method="quadrature", n_leak=4),
-        vac,
-        cat,
-        loss_type="log_infidelity",
-        bounds=GateBounds(max_disp=4.0),
-        optimizer=OptimizerConfig(n_seeds=6, n_adam_iters=600, seed=2),
-    )
-    print()
-    print(res_ecd.summary())
-    print()
-
-    # ECD constrained to stay near the vacuum -> cat brachistochrone.
-    res_geo = optimize_gate_sequence(
-        ecd_sequence(6, n_fock, disp_method="quadrature", n_leak=4),
-        vac,
-        cat,
-        loss_type="log_infidelity",
-        bounds=GateBounds(max_disp=4.0),
-        trajectory=TrajectoryPenalty.brachistochrone(weight=1.0, mode="tube"),
-        optimizer=OptimizerConfig(n_seeds=6, n_adam_iters=600, seed=4),
-    )
-    print()
-    print(res_geo.summary())
-    print("progress per layer:", np.round(res_geo.geodesic["progress"], 3))
-    print()
-
-    # Same even cat with conditional squeezing (parity-allowed target).
-    res_csq = optimize_gate_sequence(
-        csq_sequence(6, n_fock, n_leak=4),
-        vac,
-        cat,
-        loss_type="log_infidelity",
-        bounds=GateBounds(max_squeeze=0.8),
-        trajectory=TrajectoryPenalty.notes_defaults(),
-        optimizer=OptimizerConfig(n_seeds=6, n_adam_iters=600, seed=3),
-    )
-    print()
-    print(res_csq.summary())
-    print("history shape:", sequence_history(res_csq, vac).shape)

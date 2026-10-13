@@ -17,9 +17,10 @@ Joint operators are ordered ``kron(cavity, transmon)``, i.e. joint index
 from __future__ import annotations
 
 from collections.abc import Callable
+from functools import lru_cache
 
+import jax
 import jax.numpy as jnp
-from jax.scipy.linalg import expm
 
 __all__ = [
     "SIGMA_X",
@@ -84,63 +85,59 @@ def joint_operators(n_fock: int, n_transmon: int = 2) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def displacement(n_fock: int, alpha) -> jnp.ndarray:
-    r""":math:`D(\alpha) = \exp(\alpha a^\dagger - \alpha^* a)` of the truncated generator."""
-    return make_displacement(n_fock, "expm")(alpha)
+@lru_cache(maxsize=32)
+def make_displacement(n_fock: int) -> Callable:
+    r"""Return a jitted ``alpha -> D(alpha)`` closure, cached per ``n_fock``.
 
+    :math:`D(\alpha) = \exp(\alpha a^\dagger - \alpha^* a)` of the truncated
+    generator, exactly unitary in the truncated space. Built from
+    :math:`D(r e^{i\theta}) = e^{i\theta \hat n} D(r) e^{-i\theta \hat n}`:
+    conjugation by the diagonal :math:`e^{i\theta \hat n}` commutes with Fock
+    truncation, so one eigendecomposition of the fixed matrix
+    :math:`i(a^\dagger - a)` serves every :math:`\alpha`. This agrees with a
+    dense matrix exponential to round-off and is an order of magnitude faster.
 
-def make_displacement(n_fock: int, method: str = "expm") -> Callable:
-    r"""Return a jittable ``alpha -> D(alpha)`` closure.
-
-    Parameters
-    ----------
-    n_fock : int
-        Fock-space truncation.
-    method : {"expm", "quadrature"}
-        See :mod:`gate_optimization`. Both are exactly unitary on the truncated
-        space and benchmark to the same accuracy; ``"quadrature"`` is faster.
+    The polar form is not differentiable at :math:`\alpha = 0`; optimize
+    through :func:`make_displacement_apply` instead, which is smooth in
+    ``Re alpha`` and ``Im alpha``.
     """
-    a, adag, _ = cavity_operators(n_fock)
+    a = annihilation(n_fock)
+    lam, vec = jnp.linalg.eigh(1j * (a.conj().T - a))
+    vec_dag = vec.conj().T
+    n = jnp.arange(n_fock)
 
-    if method == "expm":
-
-        def displace(alpha):
-            alpha = jnp.asarray(alpha, dtype=a.dtype)
-            return expm(alpha * adag - jnp.conj(alpha) * a)
-
-    elif method == "quadrature":
-        root2 = jnp.sqrt(jnp.asarray(2.0, dtype=jnp.real(a).dtype))
-        x_op = (a + adag) / root2
-        p_op = 1j * (adag - a) / root2
-        w_x, v_x = jnp.linalg.eigh(x_op)
-        w_p, v_p = jnp.linalg.eigh(p_op)
-        v_x_dag = v_x.conj().T
-        v_p_dag = v_p.conj().T
-
-        def displace(alpha):
-            alpha = jnp.asarray(alpha, dtype=a.dtype)
-            x_0 = jnp.real(alpha)
-            p_0 = jnp.imag(alpha)
-            e_x = v_x @ (jnp.exp(1j * root2 * p_0 * w_x)[:, None] * v_x_dag)
-            e_p = v_p @ (jnp.exp(-1j * root2 * x_0 * w_p)[:, None] * v_p_dag)
-            return jnp.exp(-1j * x_0 * p_0) * (e_x @ e_p)
-
-    else:
-        raise ValueError(
-            f"unknown disp_method {method!r}; expected 'expm' or 'quadrature'. "
-            "The closed-form Fock matrix elements are not offered because they "
-            "are not unitary under truncation (see gate_optimization)."
-        )
+    @jax.jit
+    def displace(alpha):
+        alpha = jnp.asarray(alpha, dtype=a.dtype)
+        d_r = (vec * jnp.exp(-1j * jnp.abs(alpha) * lam)) @ vec_dag
+        ph = jnp.exp(1j * jnp.angle(alpha) * n)
+        return ph[:, None] * d_r * ph.conj()[None, :]
 
     return displace
+
+
+def displacement(n_fock: int, alpha) -> jnp.ndarray:
+    r""":math:`D(\alpha)` as an ``(n_fock, n_fock)`` matrix; see :func:`make_displacement`."""
+    return make_displacement(n_fock)(alpha)
 
 
 def make_displacement_apply(n_fock: int) -> Callable:
     r"""Return a jittable ``(psi, alpha, adjoint=False) -> D(alpha) psi``.
 
-    Matrix-free form of the ``"quadrature"`` displacement: identical to
-    ``make_displacement(n_fock, "quadrature")(alpha) @ psi`` up to round-off,
-    but costs three matrix-vector products instead of building ``D``.
+    Matrix-free displacement from the exact BCH factorization
+    :math:`D(\alpha) = e^{-i x_0 p_0} e^{i\sqrt{2} p_0 \hat{x}} e^{-i\sqrt{2} x_0 \hat{p}}`
+    (:math:`\alpha = x_0 + i p_0`), using eigendecompositions of
+    :math:`\hat x` and :math:`\hat p` computed once. With
+    :math:`W = V_x^\dagger V_p`,
+
+    .. math::
+        D(\alpha)\psi = e^{-i x_0 p_0}\, V_x\, e^{i\sqrt2 p_0 w_x} \odot
+            \Big(W \big(e^{-i\sqrt2 x_0 w_p} \odot V_p^\dagger \psi\big)\Big),
+
+    three matrix-vector products per state. Exactly unitary in the truncated
+    space, smooth in ``Re alpha`` and ``Im alpha``, and gradients flow through
+    diagonal phases only. It equals :func:`make_displacement` away from the
+    Fock cutoff; the two factorizations differ only at the truncation edge.
     ``psi`` holds row kets on its last axis, shape ``(..., n_fock)``.
     ``adjoint=True`` applies ``D(alpha)^dag``, which in the truncated space is
     *not* ``D(-alpha)`` for this factorization (the two exponentials do not
@@ -173,30 +170,22 @@ def make_displacement_apply(n_fock: int) -> Callable:
     return apply
 
 
-def make_squeeze(n_fock: int, method: str = "eig"):
+def make_squeeze(n_fock: int) -> Callable:
     """Return a jittable ``(r, phi) -> S(r, phi)`` closure.
 
     ``S(r, phi) = exp[(r/2)(a^2 e^{-i phi} - a^dag^2 e^{i phi})]`` (Schiaffino,
-    Lombardo & Paz, Eq. 5). ``method`` is ``"eig"`` or ``"expm"``; see
-    :mod:`gate_optimization`.
+    Lombardo & Paz, Eq. 5), from the eigendecomposition of its Hermitian
+    generator. Use :func:`make_squeeze_apply` when only ``S psi`` is needed.
     """
-    a = annihilation(n_fock)
-    a2 = a @ a
+    a2 = annihilation(n_fock) @ annihilation(n_fock)
     a2d = a2.conj().T
 
-    def generator(r, phi):  # anti-Hermitian
-        return 0.5 * r * (a2 * jnp.exp(-1j * phi) - a2d * jnp.exp(1j * phi))
+    def squeeze(r, phi):
+        gen = 0.5 * r * (a2 * jnp.exp(-1j * phi) - a2d * jnp.exp(1j * phi))  # anti-Hermitian
+        lam, v = jnp.linalg.eigh(1j * gen)
+        return (v * jnp.exp(-1j * lam)) @ v.conj().T  # exp(G) = exp(-i (iG))
 
-    if method == "expm":
-        return lambda r, phi: expm(generator(r, phi))
-    if method == "eig":
-
-        def squeeze(r, phi):
-            lam, v = jnp.linalg.eigh(1j * generator(r, phi))  # iG is Hermitian
-            return (v * jnp.exp(-1j * lam)) @ v.conj().T  # exp(G) = exp(-i H)
-
-        return squeeze
-    raise ValueError(f"unknown sq_method {method!r}; expected 'eig' or 'expm'.")
+    return squeeze
 
 
 def make_squeeze_apply(n_fock: int) -> Callable:

@@ -233,7 +233,8 @@ def plot_wigner_snapshots(
     grid_points: int = 200,
     n_snapshots: int = 5,
     title: str | None = None,
-    add_colorbar: bool = True
+    add_colorbar: bool = True,
+    labels: list[str] | None = None,
 ) -> Axes:
     """Plot a row of Wigner-function snapshots along a state trajectory.
 
@@ -268,6 +269,9 @@ def plot_wigner_snapshots(
     add_colorbar : bool, optional
         If ``True`` (default), append a shared vertical colorbar labeled
         ``W(q, p)`` in an extra axis to the right of the panels.
+    labels : list of str, optional
+        Panel titles, one per snapshot. Defaults to the time fractions
+        ``t/T* = ...``.
 
     Returns
     -------
@@ -281,22 +285,24 @@ def plot_wigner_snapshots(
     slices = [int(np.ceil(frac * (len(states)-1))) for frac in fracs]
     gs = {'width_ratios': [1] * len(fracs) + [0.07]}
 
-    fig, ax = plt.subplots(1, len(fracs) + 1, figsize=(14, 3.75),
-                           gridspec_kw=gs, constrained_layout=True,)
+    if labels is None:
+        labels = [rf"$t/T^*$ = {frac:.2f}" for frac in fracs]
+    elif len(labels) != len(fracs):
+        raise ValueError(f"expected {len(fracs)} labels, got {len(labels)}")
 
-    if x_bound is None or y_bound is None:
-        raise ValueError("When passing a state, x_bound and y_bound are required.")
+    # 14 in fits five panels; wider rows grow so panels keep their size.
+    fig, ax = plt.subplots(1, len(fracs) + 1, figsize=(max(14.0, 2.8 * len(fracs)), 3.75),
+                           gridspec_kw=gs, constrained_layout=True,)
 
     # find bounds for wigner plot based on final state
     _, _, wigner = compute_wigner(psi_f, x_bound, y_bound, grid_points)
     wmax = float(np.abs(wigner).max())
     norm = mpl_colors.TwoSlopeNorm(vmin=-wmax, vcenter=0.0, vmax=wmax)
-    ticks = [-5, -2.5, 0, 2.5, 5]
 
     # compute wigner frams
     x, y, frames = wigner_trajectory(states, x_bound, y_bound, grid_points, slices)
     cf = None
-    for i, frac in enumerate(fracs):
+    for i in range(len(fracs)):
         cf = ax[i].pcolormesh(
             x,
             y,
@@ -308,10 +314,10 @@ def plot_wigner_snapshots(
         )
 
         # add axes labels
-        ax[i].set_title(rf"$t/T^*$ = {frac:.2f}")
+        ax[i].set_title(labels[i])
         ax[i].set_xlabel("q")
-        ax[i].set_xticks(ticks)
-        ax[i].set_yticks(ticks)
+        ax[i].set_xticks(np.linspace(-x_bound, x_bound, 5))
+        ax[i].set_yticks(np.linspace(-y_bound, y_bound, 5))
 
         if i == 0:
             ax[i].set_ylabel("p")

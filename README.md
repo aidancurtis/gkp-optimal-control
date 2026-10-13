@@ -21,21 +21,37 @@ compared.
 
 ## What's inside
 
-- **`gkp_optimal_control/`** — a small Python package built on
-  [QuTiP](https://qutip.org) providing:
-  - cardinal GKP logical-state constructors with a tunable finite-energy
-    envelope,
-  - the quantum-brachistochrone Hamiltonian between arbitrary pure states,
-  - Wigner, photon-number, and control-pulse plotting helpers with a shared
-    publication style,
-  - Wigner-trajectory animation (MP4 / GIF).
+- **`gkp_optimal_control/`** — a Python package built on
+  [JAX](https://jax.readthedocs.io) and
+  [jaxquantum](https://github.com/EQuS/jaxquantum):
+  - `states`, `operators`, `hamiltonians` — finite-energy GKP, cat, Fock and
+    squeezed states; truncated-space operators, displacements and squeezers;
+    model Hamiltonians.
+  - `brachistochrone` — the time-optimal Hamiltonian between two pure states.
+  - `gate_optimization`, `gate_results` — multi-start optimization of ECD,
+    SNAP and conditional-squeezing gate sequences, and saving / reloading
+    the results as JSON.
+  - `grape` — band-limited GRAPE pulse optimization.
+  - `device`, `pulses`, `pulse_simulation` — unit-aware device configs,
+    compilation of ECD and SNAP gate sequences into control pulses, and
+    time-domain simulation of those pulses.
+  - `plotting`, `animation`, `utils` — Wigner, photon-number and trajectory
+    plots with a shared publication style, and MP4 / GIF animations.
 
-- **`notebooks/`** — runnable explorations:
-  - `foundations/` — Wigner portraits of cardinal GKP states, the Kerr
-    oscillator spectrum, and other building blocks.
-  - `brachistochrone/` — time-optimal state preparation from vacuum,
-    time-optimal logical single-qubit gates, and Mandelstam–Tamm minimum
-    times as a function of GKP squeezing.
+- **`scripts/`** — command-line entry points. `optimize_gates.py` runs one
+  gate-sequence optimization and plots the Wigner function after every gate:
+
+  ```bash
+  uv run python scripts/optimize_gates.py --gate-set ecd --n-gates 9 \
+      --n-fock 60 --target gkp:0 --n-seeds 32 --save-plot
+  ```
+
+- **`notebooks/`** — runnable explorations, grouped into `foundations/`,
+  `brachistochrone/`, `gate_optimization/` and `optimal_control/`.
+
+- **`devices/`** — device parameter files for the pulse compiler.
+
+- **`tests/`** — run with `uv run pytest tests`.
 
 ## Quickstart
 

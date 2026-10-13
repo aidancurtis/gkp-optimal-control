@@ -2,13 +2,13 @@
 
 Three layers are covered:
 
-* unit-level pieces of :mod:`pulses` (unit parsing, envelopes, rotation
+* unit-level pieces of :mod:`device` and :mod:`pulses` (unit parsing, envelopes, rotation
   waveforms, the semiclassical trajectory integrator, sequence bookkeeping),
   checked against closed forms;
 * the ECD compiler (:func:`pulses.optimize_ecd_pulse`), checked against its
   own contract (target ``beta``, nulled residual displacement);
 * end-to-end runs through :func:`pulse_simulation.simulate_sequence`, compared
-  with the ideal circuits of :mod:`gate_optimization` / :mod:`ecd_symbolic`.
+  with the ideal circuits of :mod:`gate_optimization`.
 
 Compiling an ECD pulse costs a few seconds, so the two pulses used by the
 simulation tests are module-scoped fixtures and are reused for every gate of a
@@ -26,8 +26,9 @@ import pytest
 from scipy.linalg import expm
 
 import gkp_optimal_control  # noqa: F401  (enables 64-bit JAX)
-from gkp_optimal_control import ecd_symbolic as es
+from gkp_optimal_control import device
 from gkp_optimal_control import gate_optimization as go
+from gkp_optimal_control import operators as op
 from gkp_optimal_control import pulse_simulation as ps
 from gkp_optimal_control import pulses as pl
 
@@ -35,7 +36,7 @@ DEVICES = Path(__file__).resolve().parents[1] / "devices"
 TWO_PI = 2 * np.pi
 LINEAR = {"kappa": 0.0, "chi_prime": 0.0, "kerr": 0.0}
 
-DEFAULT = pl.SystemParams()
+DEFAULT = device.SystemParams()
 # A stiffer device than Table S1: with chi = 1 MHz the qubit phase theta' picked
 # up by an ECD gate is ~0.3 rad instead of ~0.01, so sign conventions in the
 # virtual-Z bookkeeping become visible in simulation.
@@ -57,7 +58,17 @@ def _vacuum(n_fock: int) -> np.ndarray:
     return vac
 
 
-def _assert_params_close(got: pl.SystemParams, want: pl.SystemParams):
+def _ideal_ecd(thetas, phis, betas, n_fock: int) -> np.ndarray:
+    """Final ``(2, n_fock)`` block state of the ideal ECD circuit from ``|g>|0>``."""
+    seq = go.ecd_sequence(len(betas), n_fock, disp_method="exact")
+    betas = np.asarray(betas, dtype=complex)
+    flat = np.concatenate(
+        [np.stack([thetas, phis], -1).ravel(), np.stack([betas.real, betas.imag], -1).ravel()]
+    )
+    return np.asarray(seq.propagate(flat, seq.lift(_vacuum(n_fock)[None]))[0])[0]
+
+
+def _assert_params_close(got: device.SystemParams, want: device.SystemParams):
     for name, value in want.to_dict().items():
         assert getattr(got, name) == pytest.approx(value, rel=1e-9), name
 
@@ -83,7 +94,7 @@ def _assert_params_close(got: pl.SystemParams, want: pl.SystemParams):
     ],
 )
 def test_parse_quantity(value, kind, expected):
-    assert pl.parse_quantity(value, kind) == pytest.approx(expected, rel=1e-12)
+    assert device.parse_quantity(value, kind) == pytest.approx(expected, rel=1e-12)
 
 
 @pytest.mark.parametrize(
@@ -99,11 +110,11 @@ def test_parse_quantity(value, kind, expected):
 )
 def test_parse_quantity_rejects_bad_input(value, kind, error):
     with pytest.raises(error):
-        pl.parse_quantity(value, kind)
+        device.parse_quantity(value, kind)
 
 
 def test_from_dict_applies_units_and_aliases():
-    params = pl.SystemParams.from_dict(
+    params = device.SystemParams.from_dict(
         {
             "chi": "40 kHz",
             "two_kerr": "1.0 Hz",  # halved into K_c
@@ -125,15 +136,15 @@ def test_from_dict_applies_units_and_aliases():
 
 def test_from_dict_unknown_key_is_error_unless_lenient():
     with pytest.raises(ValueError, match="unknown parameter"):
-        pl.SystemParams.from_dict({"qubit_t2": "30 us"})
+        device.SystemParams.from_dict({"qubit_t2": "30 us"})
     with pytest.warns(UserWarning, match="qubit_t2"):
-        params = pl.SystemParams.from_dict({"qubit_t2": "30 us", "chi": "40 kHz"}, strict=False)
+        params = device.SystemParams.from_dict({"qubit_t2": "30 us", "chi": "40 kHz"}, strict=False)
     assert params.chi == pytest.approx(TWO_PI * 40e-3)
 
 
 def test_to_config_round_trips():
     params = DEFAULT.replace(chi=TWO_PI * 0.7, n_selective_periods=6, subtract_pedestal=False)
-    _assert_params_close(pl.SystemParams.from_dict(params.to_config()["system"]), params)
+    _assert_params_close(device.SystemParams.from_dict(params.to_config()["system"]), params)
 
 
 @pytest.mark.parametrize("ext", [".toml", ".json"])
@@ -141,16 +152,18 @@ def test_config_file_round_trips(tmp_path, ext):
     params = DEFAULT.replace(chi=TWO_PI * 0.7, dt=2e-3)
     path = tmp_path / f"device{ext}"
     params.to_config(str(path))
-    loaded, extras = pl.load_config(str(path))
+    loaded, extras = device.load_config(str(path))
     _assert_params_close(loaded, params)
     assert extras == {}
-    _assert_params_close(pl.SystemParams.from_config(str(path), dt="4 ns"), params.replace(dt=4e-3))
+    _assert_params_close(
+        device.SystemParams.from_config(str(path), dt="4 ns"), params.replace(dt=4e-3)
+    )
 
 
 def test_flat_config_splits_parameters_from_extras(tmp_path):
     path = tmp_path / "flat.json"
     path.write_text(json.dumps({"chi": "40 kHz", "ecd": {"alpha0": 5}, "note": "x"}))
-    params, extras = pl.load_config(str(path))
+    params, extras = device.load_config(str(path))
     assert params.chi == pytest.approx(TWO_PI * 40e-3)
     assert extras == {"ecd": {"alpha0": 5}, "note": "x"}
 
@@ -159,26 +172,18 @@ def test_unsupported_config_extension(tmp_path):
     path = tmp_path / "device.ini"
     path.write_text("")
     with pytest.raises(ValueError, match="unsupported config extension"):
-        pl.load_config(str(path))
+        device.load_config(str(path))
 
 
 def test_shipped_device_files_load():
-    eickbusch, extras = pl.load_config(str(DEVICES / "device_eickbusch.toml"))
+    eickbusch, extras = device.load_config(str(DEVICES / "device_eickbusch.toml"))
     _assert_params_close(eickbusch, DEFAULT)  # both are Table S1
     assert "ecd" in extras
 
-    snap, extras = pl.load_config(str(DEVICES / "device_snap.toml"))
+    snap, extras = device.load_config(str(DEVICES / "device_snap.toml"))
     assert snap.chi == pytest.approx(TWO_PI * 2.0)
     assert snap.t_snap_selective == pytest.approx(snap.n_selective_periods * TWO_PI / snap.chi)
     assert "snap" in extras
-
-
-def test_drift_kwargs_carry_the_sign_flips():
-    assert DEFAULT.drift_kwargs() == {
-        "chi": -DEFAULT.chi,
-        "k": -2.0 * DEFAULT.kerr,
-        "alpha": -DEFAULT.anharm,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -446,15 +451,14 @@ def _circuit_with_leftover_z(seq: pl.PulseSequence, betas, z_angles, n_fock: int
     ``Z(a) = diag(e^{ia/2}, e^{-ia/2})`` in the (g, e) basis. Returns the final
     ``(2, n_fock)`` block state from ``|g>|0>``.
     """
-    disp = es.fast_displacement(n_fock)
     rotations = [s.meta for s in seq.segments if s.kind == "rotation"]
     psi = np.stack([_vacuum(n_fock), np.zeros(n_fock, dtype=complex)])
     for meta, beta, angle in zip(rotations, betas, z_angles, strict=False):
-        psi = es.qubit_rotation(meta["theta"], meta["phi"]) @ psi
+        psi = np.asarray(op.qubit_rotation(meta["theta"], meta["phi"])) @ psi
         psi = np.diag([np.exp(0.5j * angle), np.exp(-0.5j * angle)]) @ psi
-        d_op = disp(beta / 2)
+        d_op = _displace(n_fock, beta / 2)
         psi = np.stack([d_op.conj().T @ psi[1], d_op @ psi[0]])
-    return es.qubit_rotation(rotations[-1]["theta"], rotations[-1]["phi"]) @ psi
+    return np.asarray(op.qubit_rotation(rotations[-1]["theta"], rotations[-1]["phi"])) @ psi
 
 
 @pytest.mark.parametrize("frame_sign", [1.0, -1.0])
@@ -470,7 +474,7 @@ def test_virtual_z_rule_cancels_a_leftover_z(monkeypatch, frame_sign):
     thetas, phis = np.append(THETAS, 0.8), np.append(PHIS, -0.6)
     _stub_pulses(monkeypatch, theta_primes)
     seq = pl.compile_ecd_sequence(betas, thetas, phis, params=DEFAULT, frame_sign=frame_sign)
-    ideal = es.ecd_propagate(thetas, phis, betas, n_fock)
+    ideal = _ideal_ecd(thetas, phis, betas, n_fock)
     p_ground = np.linalg.norm(ideal[0]) ** 2
 
     matched = _circuit_with_leftover_z(seq, betas, -frame_sign * theta_primes, n_fock)
@@ -528,7 +532,7 @@ def test_compiled_ecd_sequence_reproduces_ideal_circuit(monkeypatch, default_pul
     seq = pl.compile_ecd_sequence(betas, THETAS, PHIS, alpha0=30.0, params=DEFAULT)
     assert seq.check_drive_limits(warn=False)["eps_ok"]
 
-    ideal = es.ecd_propagate(THETAS, PHIS, betas, n_fock)
+    ideal = _ideal_ecd(THETAS, PHIS, betas, n_fock)
     fidelity, p_ground = _simulated_ground_agreement(seq, ideal, n_fock)
     assert fidelity > 0.999
     assert p_ground == pytest.approx(np.linalg.norm(ideal[0]) ** 2, abs=0.01)
@@ -563,7 +567,7 @@ def test_virtual_z_sign_matches_simulation(monkeypatch, fast_pulse):
     n_fock = 40
     betas = abs(fast_pulse.beta) * np.exp(1j * BETA_PHASES)
     _reuse_pulse(monkeypatch, fast_pulse)
-    ideal = es.ecd_propagate(THETAS, PHIS, betas, n_fock)
+    ideal = _ideal_ecd(THETAS, PHIS, betas, n_fock)
 
     seq = pl.compile_ecd_sequence(betas, THETAS, PHIS, alpha0=8.0, params=FAST)
     assert seq.meta["frame_sign"] == -1.0
@@ -571,9 +575,7 @@ def test_virtual_z_sign_matches_simulation(monkeypatch, fast_pulse):
     assert fidelity > 0.98
     assert p_ground == pytest.approx(np.linalg.norm(ideal[0]) ** 2, abs=0.04)
 
-    flipped = pl.compile_ecd_sequence(
-        betas, THETAS, PHIS, alpha0=8.0, params=FAST, frame_sign=1.0
-    )
+    flipped = pl.compile_ecd_sequence(betas, THETAS, PHIS, alpha0=8.0, params=FAST, frame_sign=1.0)
     assert _simulated_ground_agreement(flipped, ideal, n_fock)[0] < 0.97
 
 
@@ -583,8 +585,8 @@ def test_virtual_z_sign_matches_simulation(monkeypatch, fast_pulse):
 
 
 @pytest.fixture(scope="module")
-def snap_device() -> pl.SystemParams:
-    params, _ = pl.load_config(str(DEVICES / "device_snap.toml"))
+def snap_device() -> device.SystemParams:
+    params, _ = device.load_config(str(DEVICES / "device_snap.toml"))
     return params.replace(dt=10e-3, **LINEAR)
 
 

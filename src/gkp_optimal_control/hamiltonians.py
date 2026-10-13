@@ -1,6 +1,6 @@
 import jax.numpy as jnp
 
-from .operators import cavity_operators, joint_operators, quadrature_operators
+from .operators import cavity_operators, quadrature_operators
 
 
 def kerr_cavity_drift(n_fock: int, kerr: float):
@@ -23,35 +23,6 @@ def cavity_displacement_controls(n_fock: int):
     h_i = a + adag
     h_q = 1j * (a - adag)
     return jnp.stack([h_i, h_q])
-
-
-def cavity_transmon_drift(n_cav: int, n_tr: int, chi: float, k: float = 0.0, alpha: float = 0.0):
-    """Dispersive cavity-transmon system in rotating frame, on resonance."""
-    o = joint_operators(n_cav, n_tr)
-    a, adag, b, bdag = o["a"], o["adag"], o["b"], o["bdag"]
-    n_c = adag @ a
-    n_t = bdag @ b
-
-    sys_h = chi * (n_c @ n_t)
-    if k != 0.0:
-        sys_h = sys_h + (k / 2) * (adag @ adag @ a @ a)
-    if alpha != 0.0:
-        sys_h = sys_h + (alpha / 2) * (bdag @ bdag @ b @ b)
-    return sys_h
-
-
-def cavity_transmon_iq_controls(n_cav: int, n_tr: int):
-    """I/Q drives on both cavity and transmon."""
-    o = joint_operators(n_cav, n_tr)
-    a, adag, b, bdag = o["a"], o["adag"], o["b"], o["bdag"]
-    return jnp.stack(
-        [
-            a + adag,
-            1j * (a - adag),
-            b + bdag,
-            1j * (b - bdag),
-        ]
-    )
 
 
 def gkp_cosine_hamiltonian(n_fock: int, n: int = 2, symmetric: bool = True, pad: int = 3):
